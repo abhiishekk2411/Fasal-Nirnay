@@ -9,6 +9,8 @@ const { calculateWeatherRisk } = require('../services/weather/weatherRiskService
 const MarketPrice = require('../models/MarketPrice');
 const DecisionHistory = require('../models/DecisionHistory');
 const mongoose = require('mongoose');
+const buyerService = require('../services/buyer/buyerService');
+const buyerMatchingService = require('../services/buyer/buyerMatchingService');
 
 // @desc    Analyze crop selling decision
 // @route   POST /api/decision/analyze
@@ -155,9 +157,6 @@ const analyzeDecision = async (req, res, next) => {
     // 7. Find Buyer Matches (PS 26132 Extension)
     let buyerMatches = [];
     try {
-      const buyerService = require('../services/buyer/buyerService');
-      const buyerMatchingService = require('../services/buyer/buyerMatchingService');
-      
       const allBuyers = await buyerService.getAllActiveBuyers();
       buyerMatches = await buyerMatchingService.findMatches(
         cropId, 

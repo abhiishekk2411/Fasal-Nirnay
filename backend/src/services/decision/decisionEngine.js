@@ -13,13 +13,11 @@ const calculateDecision = ({ cropId, varietyId, quantityKg, farmerLocation, mand
     // 1. Calculate Expected Revenue
     const expectedRevenue = mandi.price * quantityKg;
 
-    // 2. Fetch/Calculate Transport Cost (Mocked for MVP based on distance)
-    // Assuming a mock rate of ₹20 per km per 1000kg (₹0.02 per kg per km)
-    // Since distance is passed in mock data, we use it directly or default to 50
+    // 2. Extract Transport Cost (Calculated previously in decisionController)
     const distanceKm = mandi.distanceKm || 50; 
     const transportCost = mandi.transportCost || Math.round(distanceKm * 0.02 * quantityKg);
 
-    // 3. Fetch/Calculate Risk Penalty (Mocked for MVP based on weather/quality)
+    // 3. Extract Risk Penalty (Calculated previously in decisionController)
     const riskPenalty = mandi.riskPenalty || 0;
 
     // 4. Trend and Timing Logic

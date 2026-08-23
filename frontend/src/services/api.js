@@ -1,15 +1,12 @@
-// ============================================================================
-// API Base Configuration — FasalNirnay Frontend
-// ============================================================================
-// This file provides the base API client for communicating with the backend.
-// Currently returns mock data. Replace implementations when backend is ready.
-// ============================================================================
+/**
+ * API Base Configuration — FasalNirnay Frontend
+ * Provides the base API client for communicating with the backend.
+ */
 
 const BASE_URL = '/api';
 
 /**
  * Generic API request helper.
- * TODO: Replace with actual fetch/axios calls when backend is ready.
  */
 export async function apiRequest(endpoint, options = {}) {
   const url = `${BASE_URL}${endpoint}`;

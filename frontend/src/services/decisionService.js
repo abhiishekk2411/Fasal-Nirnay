@@ -1,10 +1,7 @@
-// ============================================================================
-// Decision Service — FasalNirnay Frontend
-// ============================================================================
-// Decision Service
-// ============================================================================
-// Communicates with the backend decision endpoints.
-// ============================================================================
+/**
+ * Decision Service — FasalNirnay Frontend
+ * Communicates with the backend decision endpoints.
+ */
 
 import { apiRequest } from './api';
 
@@ -51,7 +48,7 @@ export const analyzeImage = async (file) => {
   formData.append('image', file);
 
   try {
-    const response = await fetch('http://localhost:5000/api/vision/analyze', {
+    const response = await fetch('/api/vision/analyze', {
       method: 'POST',
       body: formData,
     });

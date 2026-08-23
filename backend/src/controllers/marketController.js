@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const marketService = require('../services/market/marketService');
 const trendService = require('../services/market/trendService');
 const MarketPrice = require('../models/MarketPrice');
@@ -24,8 +25,6 @@ const getMarkets = async (req, res, next) => {
     next(error);
   }
 };
-
-const mongoose = require('mongoose');
 
 const generateFallbackHistoricalPrices = (cropId, mandiId, varietyId, days = 30) => {
   const data = [];
