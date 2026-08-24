@@ -91,16 +91,24 @@ const analyzeIvrDecision = async (req, res, next) => {
       });
     }
 
+    const isExotelMode = inputData.mode === 'exotel';
+
+    // Helper to send response based on mode
+    const sendResponse = (success, message, data = {}) => {
+      if (isExotelMode) {
+        res.type('text/plain');
+        return res.send(message);
+      }
+      return res.json({ success, message, ...data });
+    };
+
     // 1. Geocode farmer location
     let farmerCoords;
     try {
       farmerCoords = await geocodeLocation(location);
     } catch (err) {
       console.error('[IVR] Geocoding Error:', err.message);
-      return res.json({
-        success: false,
-        message: "We could not determine your location."
-      });
+      return sendResponse(false, "Sthaan ka pata nahi lag paya.");
     }
 
     // 2. Fetch Weather Forecast and Calculate Risk
@@ -117,10 +125,7 @@ const analyzeIvrDecision = async (req, res, next) => {
     const marketData = await marketService.getMarketsByCropAndLocation(cropId, location);
 
     if (!marketData || marketData.length === 0) {
-      return res.json({
-        success: false,
-        message: "No market data is currently available for this crop."
-      });
+      return sendResponse(false, "Is fasal ke liye abhi mandi ka bhav uplabdh nahi hai.");
     }
 
     // 4. Process each mandi: Distance, Transport, Trend, Risk
@@ -188,8 +193,9 @@ const analyzeIvrDecision = async (req, res, next) => {
     const bestMandiId = decisionResult.bestMandi;
     const bestMandiObj = decisionResult.rankedMandis.find(m => m.mandiId === bestMandiId) || decisionResult.rankedMandis[0];
 
-    return res.json({
-      success: true,
+    const recommendationMsg = `Aapke diye gaye details ke anusaar ${bestMandiObj.mandiName} ek behtar vikalp hai. Aapki anumanit shuddh kamai ${bestMandiObj.expectedNetReturn} rupaye hai.`;
+
+    return sendResponse(true, recommendationMsg, {
       mandiName: bestMandiObj.mandiName,
       expectedNetReturn: bestMandiObj.expectedNetReturn,
       sellNow: bestMandiObj.sell_now_vs_wait === 'sell_now',
@@ -199,7 +205,12 @@ const analyzeIvrDecision = async (req, res, next) => {
 
   } catch (error) {
     console.error('[IVR] Controller Error:', error);
-    // Exotel needs a reliable JSON format even on error
+    // Exotel needs a reliable format even on error
+    const inputData = { ...req.query, ...req.body };
+    if (inputData.mode === 'exotel') {
+      res.type('text/plain');
+      return res.send("Takneeki samasya ke karan jankari nahi mil payi. Kripya thodi der baad prayas karein.");
+    }
     return res.json({
       success: false,
       message: "Analysis is temporarily unavailable."
