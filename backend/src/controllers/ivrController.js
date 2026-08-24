@@ -59,6 +59,13 @@ const analyzeIvrDecision = async (req, res, next) => {
     let quantityInput = inputData.quantity || inputData.quantityDigit;
     let locationInput = inputData.location || inputData.locationDigit;
     
+    // Parse 'digits' parameter if provided (e.g. digits=121)
+    if (inputData.digits && typeof inputData.digits === 'string' && inputData.digits.length >= 3) {
+      cropInput = inputData.digits[0];
+      quantityInput = inputData.digits[1];
+      locationInput = inputData.digits[2];
+    }
+    
     // Map inputs if they are just digits
     let cropId, varietyId, quantityKg, location;
     
