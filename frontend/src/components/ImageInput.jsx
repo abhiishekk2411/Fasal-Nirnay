@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Camera, Image as ImageIcon, X, CheckCircle, AlertCircle, Info, Loader2 } from 'lucide-react';
-import { useTranslation } from '../i18n';
+import { useTranslation, formatCropName, formatVarietyName } from '../i18n';
 import { analyzeImage } from '../services/decisionService';
 
 const compressImage = (file, maxWidth = 500, quality = 0.7) => {
@@ -235,8 +235,8 @@ const ImageInput = ({ onImageSelect, onCropDetected }) => {
             <div className="bg-white border-2 border-primary-200 p-6 rounded-xl shadow-md">
               <p className="text-surface-600 font-medium mb-2">{t('imageInput.cropDetected')}:</p>
               <h3 className="text-3xl font-bold text-primary-700 mb-2">
-                {t(`crops.${detectedData.cropId}`) || detectedData.cropName} 
-                {detectedData.varietyId ? ` (${t(`varieties.${detectedData.varietyId}`) || detectedData.varietyName})` : ''}
+                {formatCropName(detectedData.cropId, detectedData.cropName, t)} 
+                {detectedData.varietyId ? ` (${formatVarietyName(detectedData.varietyId, detectedData.varietyName, t)})` : ''}
               </h3>
               <p className={`font-medium mb-6 ${detectedData.confidence >= 0.85 ? 'text-green-600' : detectedData.confidence >= 0.65 ? 'text-yellow-600' : 'text-red-500'}`}>
                 {getConfidenceText(detectedData.confidence)}

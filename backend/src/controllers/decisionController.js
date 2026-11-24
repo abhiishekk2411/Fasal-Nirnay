@@ -9,22 +9,20 @@ const { calculateWeatherRisk } = require('../services/weather/weatherRiskService
 const MarketPrice = require('../models/MarketPrice');
 const DecisionHistory = require('../models/DecisionHistory');
 const mongoose = require('mongoose');
-const buyerService = require('../services/buyer/buyerService');
-const buyerMatchingService = require('../services/buyer/buyerMatchingService');
 
 // @desc    Analyze crop selling decision
 // @route   POST /api/decision/analyze
 // @access  Public
 const analyzeDecision = async (req, res, next) => {
   try {
-    const { cropId, varietyId, quantityKg, location } = req.body;
+    const { cropId, varietyId, quantityKg, location, coordinates } = req.body;
 
     if (!cropId || !varietyId || quantityKg == null || !location) {
       res.status(400);
       throw new Error('कृपया फसल, किस्म, मात्रा और स्थान की जानकारी भरें।');
     }
 
-    if (location.trim() === '') {
+    if (typeof location === 'string' && location.trim() === '') {
       res.status(400);
       throw new Error('स्थान की जानकारी खाली नहीं हो सकती।');
     }
@@ -41,7 +39,14 @@ const analyzeDecision = async (req, res, next) => {
     // 1. Geocode farmer location
     let farmerCoords;
     try {
-      farmerCoords = await geocodeLocation(location);
+      if (coordinates && coordinates.latitude != null && coordinates.longitude != null) {
+        farmerCoords = await geocodeLocation(coordinates);
+        if (location && typeof location === 'string' && !farmerCoords.displayName) {
+          farmerCoords.displayName = location;
+        }
+      } else {
+        farmerCoords = await geocodeLocation(location);
+      }
     } catch (err) {
       res.status(400);
       throw new Error(`Location error: ${err.message}`);
@@ -51,8 +56,8 @@ const analyzeDecision = async (req, res, next) => {
     const weatherData = await getWeatherForecast(farmerCoords.latitude, farmerCoords.longitude);
     const weatherRisk = calculateWeatherRisk(weatherData, cropId);
 
-    // 3. Fetch relevant market data from DB
-    const marketData = await marketService.getMarketsByCropAndLocation(cropId, location);
+    // 3. Fetch relevant market data from Agmarknet / DB
+    const marketData = await marketService.getMarketsByCropAndLocation(cropId, farmerCoords);
 
     if (!marketData || marketData.length === 0) {
       res.status(404);
@@ -61,14 +66,23 @@ const analyzeDecision = async (req, res, next) => {
 
     // 4. Process each mandi: Distance, Transport, Trend, Risk
     const mandisWithDetails = await Promise.all(marketData.map(async (m) => {
-      // Get Mandi coordinates from the marketData (which comes from Mandi model)
-      const mandiLat = m.latitude;
-      const mandiLon = m.longitude;
+      let mandiLat = m.latitude;
+      let mandiLon = m.longitude;
       
-      let distanceKm = 50; // Fallback
-      if (mandiLat && mandiLon) {
-        distanceKm = calculateHaversineDistance(farmerCoords.latitude, farmerCoords.longitude, mandiLat, mandiLon);
+      if (!mandiLat || !mandiLon) {
+        try {
+          const resolved = await geocodeLocation(m.mandiName || m.mandiId);
+          mandiLat = resolved.latitude;
+          mandiLon = resolved.longitude;
+        } catch (mErr) {
+          mandiLat = farmerCoords.latitude;
+          mandiLon = farmerCoords.longitude;
+        }
       }
+      
+      const distanceKm = m.distanceKm != null
+        ? m.distanceKm
+        : Math.round(calculateHaversineDistance(farmerCoords.latitude, farmerCoords.longitude, mandiLat, mandiLon));
       
       const transportCost = calculateTransportCost(distanceKm, quantityKg);
       
@@ -154,23 +168,7 @@ const analyzeDecision = async (req, res, next) => {
       // DO NOT fail the main request if DB history saving fails
     }
 
-    // 7. Find Buyer Matches (PS 26132 Extension)
-    let buyerMatches = [];
-    try {
-      const allBuyers = await buyerService.getAllActiveBuyers();
-      buyerMatches = await buyerMatchingService.findMatches(
-        cropId, 
-        varietyId, 
-        quantityKg, 
-        { latitude: farmerCoords.latitude, longitude: farmerCoords.longitude }, 
-        allBuyers
-      );
-    } catch (buyerErr) {
-      console.error("Failed to fetch buyer matches:", buyerErr.message);
-      // DO NOT fail the main request if buyer lookup fails
-    }
-
-    // 8. Return structured JSON
+    // 7. Return structured JSON
     res.json({
       success: true,
       data: {
@@ -186,7 +184,6 @@ const analyzeDecision = async (req, res, next) => {
           riskPercentage: weatherRisk.riskPercentage,
           cropPerishability: weatherRisk.cropPerishability
         },
-        buyers: buyerMatches,
         ...decisionResult
       }
     });

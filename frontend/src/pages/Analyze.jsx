@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Keyboard, Mic, Camera, MapPin } from 'lucide-react';
+import { Keyboard, Mic, Camera, MapPin, Navigation, Loader2 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import VoiceInput from '../components/VoiceInput';
 import ImageInput from '../components/ImageInput';
-import { currentCrop, cropOptions, unitOptions } from '../data/mockData';
+import { cropOptions, unitOptions } from '../data/mockData';
 import { useTranslation } from '../i18n';
 import { analyzeDecision } from '../services/decisionService';
 
@@ -13,20 +13,87 @@ export default function Analyze() {
   const { t } = useTranslation();
   const [inputMode, setInputMode] = useState('type'); // 'type', 'voice', 'image'
   const [formData, setFormData] = useState({
-    crop: currentCrop.crop,
-    variety: currentCrop.variety,
-    quantity: currentCrop.quantity,
-    unit: currentCrop.unit,
-    location: currentCrop.location
+    crop: '',
+    variety: '',
+    quantity: '',
+    unit: 'kg',
+    location: '',
+    latitude: null,
+    longitude: null
   });
   const [isImageSelected, setIsImageSelected] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isImageConfirmed, setIsImageConfirmed] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationStatus, setLocationStatus] = useState('');
+
+  const detectLiveLocation = () => {
+    if (!navigator.geolocation) {
+      setLocationStatus('unsupported');
+      return;
+    }
+
+    setIsLocating(true);
+    setLocationStatus('locating');
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`, {
+            headers: {
+              'User-Agent': 'FasalNirnay-LiveApp/2.0'
+            }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const addr = data.address || {};
+            const city = addr.city || addr.town || addr.village || addr.suburb || addr.state_district || addr.county || '';
+            const state = addr.state || '';
+            const detectedName = [city, state].filter(Boolean).join(', ') || data.display_name || `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`;
+            setFormData(prev => ({
+              ...prev,
+              location: detectedName,
+              latitude,
+              longitude
+            }));
+            setLocationStatus('detected');
+          } else {
+            setFormData(prev => ({
+              ...prev,
+              location: prev.location || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+              latitude,
+              longitude
+            }));
+            setLocationStatus('detected');
+          }
+        } catch (e) {
+          setFormData(prev => ({
+            ...prev,
+            location: prev.location || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+            latitude,
+            longitude
+          }));
+          setLocationStatus('detected');
+        } finally {
+          setIsLocating(false);
+        }
+      },
+      (err) => {
+        console.warn('Geolocation error:', err.message);
+        setIsLocating(false);
+        setLocationStatus('denied');
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  };
 
   useEffect(() => {
     // Clear stale image analysis data when starting a new analysis flow
     sessionStorage.removeItem('fasalnirnay_image_analysis');
+    // Automatically detect live location on mount
+    detectLiveLocation();
   }, []);
 
   const handleModeChange = (mode) => {
@@ -38,14 +105,22 @@ export default function Analyze() {
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-    setErrorMsg(''); // Clear error on change
+    setFormData(prev => {
+      const next = { ...prev, [name]: value };
+      // If user types location manually, reset coordinates to let backend geocode text
+      if (name === 'location') {
+        next.latitude = null;
+        next.longitude = null;
+      }
+      return next;
+    });
+    setErrorMsg('');
   };
 
   const handleAnalyze = async () => {
     // 1. Validate
     if (!formData.crop || !formData.variety || !formData.quantity || !formData.location) {
-      setErrorMsg('कृपया सभी आवश्यक जानकारी भरें।');
+      setErrorMsg('कृपया सभी आवश्यक जानकारी (फसल, किस्म, मात्रा, स्थान) भरें।');
       return;
     }
 
@@ -54,7 +129,7 @@ export default function Analyze() {
     setErrorMsg('');
 
     try {
-      // 3. Call backend
+      // 3. Call backend with coordinates and location
       const result = await analyzeDecision(formData);
       
       // 4. Navigate on success
@@ -79,8 +154,9 @@ export default function Analyze() {
           onChange={handleInputChange} 
           className="form-select"
         >
+          <option value="">{t('analyze.selectCropPlaceholder', 'फसल चुनें (Select)')}</option>
           {cropOptions && cropOptions.map(option => (
-            <option key={option} value={option}>{t('crops.' + option)}</option>
+            <option key={option} value={option}>{t('crops.' + option) || option}</option>
           ))}
         </select>
       </div>
@@ -93,7 +169,7 @@ export default function Analyze() {
           value={formData.variety} 
           onChange={handleInputChange} 
           className="form-input" 
-          placeholder={t('analyze.varietyPlaceholder')}
+          placeholder={t('analyze.varietyPlaceholder') || 'किस्म दर्ज करें (उदा. Hybrid, Desi)'}
         />
       </div>
 
@@ -106,7 +182,7 @@ export default function Analyze() {
             value={formData.quantity} 
             onChange={handleInputChange} 
             className="form-input flex-2" 
-            placeholder={t('analyze.quantityPlaceholder')}
+            placeholder={t('analyze.quantityPlaceholder') || 'मात्रा दर्ज करें (उदा. 500)'}
           />
           <select 
             name="unit" 
@@ -122,7 +198,27 @@ export default function Analyze() {
       </div>
 
       <div>
-        <label className="form-label">{t('analyze.location')}</label>
+        <div className="flex justify-between items-center mb-1">
+          <label className="form-label mb-0">{t('analyze.location')}</label>
+          <button 
+            type="button" 
+            onClick={detectLiveLocation} 
+            disabled={isLocating}
+            className="text-xs md:text-sm font-semibold text-primary-600 hover:text-primary-800 flex items-center gap-1.5 px-3 py-1 rounded-lg bg-primary-50 border border-primary-200 hover:bg-primary-100 transition-colors cursor-pointer"
+          >
+            {isLocating ? (
+              <>
+                <Loader2 size={14} className="animate-spin text-primary-600" />
+                <span>लोकेशन खोजी जा रही है...</span>
+              </>
+            ) : (
+              <>
+                <Navigation size={14} className="text-primary-600" />
+                <span>मेरी लोकेशन लें / Use My Live Location</span>
+              </>
+            )}
+          </button>
+        </div>
         <div className="relative">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <MapPin size={20} className="text-surface-400" />
@@ -133,9 +229,19 @@ export default function Analyze() {
             value={formData.location} 
             onChange={handleInputChange} 
             className="form-input pl-10" 
-            placeholder={t('analyze.locationPlaceholder')}
+            placeholder={t('analyze.locationPlaceholder') || 'गाँव, शहर या ज़िला दर्ज करें / Enter city, village'}
           />
         </div>
+        {locationStatus === 'detected' && (
+          <p className="text-xs text-green-700 mt-1.5 flex items-center gap-1 font-medium">
+            ✓ लाइव लोकेशन पहचानी गई (Live GPS Detected)
+          </p>
+        )}
+        {locationStatus === 'denied' && (
+          <p className="text-xs text-surface-500 mt-1.5">
+            GPS अनुमति नहीं मिली — कृपया अपना शहर या ज़िला टाइप करें (Manual entry enabled)
+          </p>
+        )}
       </div>
     </div>
   );

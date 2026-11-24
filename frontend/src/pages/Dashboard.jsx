@@ -4,7 +4,7 @@ import { BarChart3, IndianRupee, Wheat, MapPin, Search, GitCompare, MessageCircl
 import PageHeader from '../components/PageHeader';
 import MetricCard from '../components/MetricCard';
 import { getDashboard } from '../services/decisionService';
-import { useTranslation } from '../i18n';
+import { useTranslation, formatMandiName, formatCropName } from '../i18n';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -70,8 +70,8 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             <MetricCard icon={BarChart3} label={t('dashboard.totalAnalyses')} value={data.totalAnalyses.toLocaleString('hi-IN')} />
             <MetricCard icon={IndianRupee} label={t('dashboard.avgNetReturn')} value={`₹${data.averageNetReturn.toLocaleString('hi-IN')}`} />
-            <MetricCard icon={Wheat} label={t('dashboard.bestPerformingCrop')} value={data.latestCrop ? t(`crops.${data.latestCrop}`) || data.latestCrop : t('dashboard.noCrop')} />
-            <MetricCard icon={MapPin} label={t('dashboard.latestRecommendation')} value={data.latestMandi ? t(`mandis.${data.latestMandi}`) || data.latestMandi : t('dashboard.noMandi')} />
+            <MetricCard icon={Wheat} label={t('dashboard.bestPerformingCrop')} value={data.latestCrop ? formatCropName(data.latestCrop, data.latestCrop, t) : t('dashboard.noCrop')} />
+            <MetricCard icon={MapPin} label={t('dashboard.latestRecommendation')} value={data.latestMandi ? formatMandiName(data.latestMandi, data.latestMandi, t) : t('dashboard.noMandi')} />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
@@ -86,7 +86,7 @@ export default function Dashboard() {
                     <span className="badge badge-accent">{t('common.bestOption')}</span>
                   </div>
                   <div className="mb-6">
-                    <p className="text-surface-600 mb-1 text-lg">{t(`mandis.${data.recentAnalyses[0].selectedMandiId}`) || data.recentAnalyses[0].selectedMandiName}</p>
+                    <p className="text-surface-600 mb-1 text-lg">{formatMandiName(data.recentAnalyses[0].selectedMandiId, data.recentAnalyses[0].selectedMandiName, t)}</p>
                     <p className="metric-value-lg text-primary-600">₹{(data.recentAnalyses[0].expectedNetReturn).toLocaleString('hi-IN')}</p>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
@@ -118,20 +118,6 @@ export default function Dashboard() {
 
             {/* Right column */}
             <div className="space-y-8">
-              {/* Buyer Stats (PS 26132) */}
-              <div className="card p-6 border-2 border-primary-50 bg-surface-50">
-                <h3 className="text-xl font-bold mb-2 flex items-center gap-2 text-surface-900">
-                  <span>🛒</span> अभी उपलब्ध खरीदार
-                </h3>
-                <p className="text-surface-600 mb-4 text-sm">
-                  सिस्टम में आपकी फसलों के लिए संभावित खरीदारों की मांग।
-                </p>
-                <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-surface-200">
-                  <div className="text-surface-500 font-semibold">कुल खरीदार:</div>
-                  <div className="text-3xl font-extrabold text-primary-700">{data.totalBuyers || 3}</div>
-                </div>
-              </div>
-
               <div className="card p-6">
                 <h3 className="text-xl font-bold mb-4">{t('dashboard.quickActions')}</h3>
                 <div className="flex flex-col gap-3">

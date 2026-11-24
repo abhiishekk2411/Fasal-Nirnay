@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { CheckCircle2, TrendingUp, TrendingDown, Minus, CloudRain, Sun, Cloud, AlertTriangle, Volume2, Square } from 'lucide-react';
-import { useTranslation } from '../i18n';
+import { useTranslation, formatMandiName } from '../i18n';
 
 const RecommendationCard = ({ mandi, tags, weather }) => {
   const { t, lang } = useTranslation();
@@ -38,7 +38,7 @@ const RecommendationCard = ({ mandi, tags, weather }) => {
   };
 
   const generateSpeechText = () => {
-    const mandiName = t('mandis.' + mandi.mandiId) || mandi.mandiName;
+    const mandiName = formatMandiName(mandi.mandiId, mandi.mandiName, t);
     const amount = mandi.expectedNetReturn.toString();
     const advice = mandi.sell_now_vs_wait === 'sell_now' ? t('ux.sellNowReason') : t('ux.waitReason');
     const weatherExp = weather && weather.available ? getWeatherExplanation(weather.riskLevel) : '';
@@ -101,7 +101,7 @@ const RecommendationCard = ({ mandi, tags, weather }) => {
           </div>
           
           <h3 className="text-4xl md:text-5xl font-extrabold text-surface-900 mb-4 break-words">
-            {t('mandis.' + mandi.mandiId) || mandi.mandiName}
+            {formatMandiName(mandi.mandiId, mandi.mandiName, t)}
           </h3>
           
           <p className="text-xl md:text-2xl text-surface-700 mb-6 leading-relaxed">

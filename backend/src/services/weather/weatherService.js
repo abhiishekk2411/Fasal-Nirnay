@@ -4,7 +4,7 @@
  */
 
 const getWeatherForecast = async (latitude, longitude) => {
-  const API_KEY = process.env.OPENWEATHER_API_KEY;
+  const API_KEY = process.env.OPENWEATHER_API_KEY || process.env.WEATHER_API_KEY;
 
   if (!API_KEY) {
     console.warn("Weather Service: OPENWEATHER_API_KEY is missing. Returning fallback.");

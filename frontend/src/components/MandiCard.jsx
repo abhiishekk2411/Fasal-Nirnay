@@ -1,6 +1,6 @@
 import React from 'react';
 import { MapPin, Truck, IndianRupee } from 'lucide-react';
-import { useTranslation } from '../i18n';
+import { useTranslation, formatMandiName } from '../i18n';
 
 const MandiCard = ({ mandi, rank, isHighlighted }) => {
   const { t } = useTranslation();
@@ -23,8 +23,7 @@ const MandiCard = ({ mandi, rank, isHighlighted }) => {
   const badgeInfo = getRankBadge();
 
   const getMandiName = () => {
-    const translatedName = mandiId ? t(`mandis.${mandiId}`) : null;
-    return translatedName || mandiName;
+    return formatMandiName(mandiId, mandiName, t);
   };
 
   return (
