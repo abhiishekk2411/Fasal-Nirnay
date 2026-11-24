@@ -6,14 +6,21 @@
 import { apiRequest } from './api';
 
 export const analyzeDecision = async (formData) => {
+  const payload = {
+    cropId: formData.crop?.toLowerCase() || formData.cropId,
+    varietyId: formData.variety?.toLowerCase() || formData.varietyId,
+    quantityKg: Number(formData.quantity) || formData.quantityKg,
+    location: formData.location || formData.farmerLocation
+  };
+  if (formData.latitude != null && formData.longitude != null) {
+    payload.coordinates = {
+      latitude: formData.latitude,
+      longitude: formData.longitude
+    };
+  }
   const result = await apiRequest('/decision/analyze', {
     method: 'POST',
-    body: JSON.stringify({
-      cropId: formData.crop?.toLowerCase() || formData.cropId,
-      varietyId: formData.variety?.toLowerCase() || formData.varietyId,
-      quantityKg: Number(formData.quantity) || formData.quantityKg,
-      location: formData.location || formData.farmerLocation
-    })
+    body: JSON.stringify(payload)
   });
   return result.data;
 };

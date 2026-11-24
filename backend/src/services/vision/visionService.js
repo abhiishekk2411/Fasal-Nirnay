@@ -4,6 +4,68 @@
  * @param {string} mimeType - The mime type of the image.
  * @returns {Object} Extracted crop info
  */
+
+const normalizeCropData = (rawCropId, rawCropName, rawVarietyId, rawVarietyName) => {
+  const cropStr = `${rawCropId || ''} ${rawCropName || ''}`.toLowerCase();
+  const varietyStr = `${rawVarietyId || ''} ${rawVarietyName || ''}`.toLowerCase();
+
+  let cropId = rawCropId ? rawCropId.toLowerCase().trim() : null;
+  let cropName = rawCropName || null;
+  let varietyId = rawVarietyId ? rawVarietyId.toLowerCase().trim() : null;
+  let varietyName = rawVarietyName || null;
+
+  // 1. Brinjal / Eggplant / Baingan
+  if (cropStr.includes('brinjal') || cropStr.includes('eggplant') || cropStr.includes('aubergine') || cropStr.includes('baingan') || cropStr.includes('बैंगन')) {
+    cropId = 'brinjal';
+    cropName = 'Brinjal (बैंगन)';
+    if (varietyStr.includes('purple') || varietyStr.includes('long') || varietyStr.includes('लंबा')) {
+      varietyId = 'long_purple';
+      varietyName = 'Long Purple (लंबा बैंगनी)';
+    } else if (varietyStr.includes('round') || varietyStr.includes('गोल')) {
+      varietyId = 'round';
+      varietyName = 'Round (गोल)';
+    } else if (!varietyId) {
+      varietyId = 'desi';
+      varietyName = 'Desi (देसी)';
+    }
+  } else if (cropStr.includes('tomat') || cropStr.includes('टमाटर')) {
+    cropId = 'tomato';
+    cropName = 'Tomato (टमाटर)';
+  } else if (cropStr.includes('onion') || cropStr.includes('प्याज़') || cropStr.includes('प्याज')) {
+    cropId = 'onion';
+    cropName = 'Onion (प्याज)';
+  } else if (cropStr.includes('potat') || cropStr.includes('आलू')) {
+    cropId = 'potato';
+    cropName = 'Potato (आलू)';
+  } else if (cropStr.includes('wheat') || cropStr.includes('गेहूँ') || cropStr.includes('गेहूं')) {
+    cropId = 'wheat';
+    cropName = 'Wheat (गेहूं)';
+  } else if (cropStr.includes('rice') || cropStr.includes('paddy') || cropStr.includes('धान')) {
+    cropId = 'rice';
+    cropName = 'Rice (धान)';
+  } else if (cropStr.includes('chill') || cropStr.includes('मिर्च')) {
+    cropId = 'chilli';
+    cropName = 'Chilli (मिर्च)';
+  } else if (cropStr.includes('cabbage') || cropStr.includes('पत्तागोभी')) {
+    cropId = 'cabbage';
+    cropName = 'Cabbage (पत्तागोभी)';
+  } else if (cropStr.includes('cauliflower') || cropStr.includes('फूलगोभी')) {
+    cropId = 'cauliflower';
+    cropName = 'Cauliflower (फूलगोभी)';
+  } else if (cropStr.includes('soybean') || cropStr.includes('सोयाबीन')) {
+    cropId = 'soybean';
+    cropName = 'Soybean (सोयाबीन)';
+  } else if (cropStr.includes('cotton') || cropStr.includes('कपास')) {
+    cropId = 'cotton';
+    cropName = 'Cotton (कपास)';
+  } else if (cropStr.includes('maize') || cropStr.includes('corn') || cropStr.includes('मक्का')) {
+    cropId = 'maize';
+    cropName = 'Maize (मक्का)';
+  }
+
+  return { cropId, cropName, varietyId, varietyName };
+};
+
 const analyzeCropImage = async (imageBuffer, mimeType) => {
   if (!process.env.OPENROUTER_API_KEY) {
     throw new Error('OpenRouter API Key is missing. Cannot perform image analysis.');
@@ -12,33 +74,44 @@ const analyzeCropImage = async (imageBuffer, mimeType) => {
   const model = process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash';
 
   const prompt = `
-You are a crop identification assistant for Indian farmers.
-Analyze only the visible crop/plant/produce in the image.
-Identify the most likely crop.
-Identify variety only when there is sufficient visual evidence.
-Do not guess unsupported details.
-Return JSON only.
-Do not provide medical, pesticide, fertilizer or agricultural treatment advice.
+You are an expert crop identification assistant for Indian agriculture.
+Analyze only the visible crop, vegetable, produce, or plant in the image.
+Identify the crop name and variety.
 
-Expected JSON structure:
+You MUST choose "cropId" from this supported list:
+- "brinjal" (for Brinjal, Eggplant, Aubergine, Baingan / बैंगन. CRITICAL: ALWAYS use "brinjal", NEVER output "eggplant")
+- "tomato" (Tomato / टमाटर)
+- "onion" (Onion / प्याज)
+- "potato" (Potato / आलू)
+- "wheat" (Wheat / गेहूं)
+- "rice" (Rice / धान)
+- "chilli" (Chilli / मिर्च)
+- "cabbage" (Cabbage / पत्तागोभी)
+- "cauliflower" (Cauliflower / फूलगोभी)
+- "soybean" (Soybean / सोयाबीन)
+- "cotton" (Cotton / कपास)
+- "maize" (Maize / मक्का)
+- "sugarcane" (Sugarcane / गन्ना)
+- "grapes" (Grapes / अंगूर)
+- "pomegranate" (Pomegranate / अनार)
+
+Return JSON only in this exact structure:
 {
-  "cropId": "tomato",
-  "cropName": "Tomato",
-  "varietyId": "hybrid",
-  "varietyName": "Hybrid",
-  "confidence": 0.91
+  "cropId": "brinjal",
+  "cropName": "Brinjal (बैंगन)",
+  "varietyId": "long_purple",
+  "varietyName": "Long Purple",
+  "confidence": 0.95
 }
 
-If variety cannot be identified, set varietyId and varietyName to null.
-If crop cannot be confidently identified, set all fields to null and confidence to 0.
-Return only valid JSON, without any markdown formatting block.
+If variety cannot be identified with visual evidence, set varietyId and varietyName to null.
+Return valid JSON without any markdown code fences.
 `;
 
   try {
     const base64Image = imageBuffer.toString('base64');
     const dataUrl = `data:${mimeType};base64,${base64Image}`;
 
-    // Add a reasonable timeout using AbortController
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
 
@@ -86,7 +159,6 @@ Return only valid JSON, without any markdown formatting block.
     }
 
     let resultText = data.choices[0].message.content.trim();
-    // Clean up potential markdown formatting
     if (resultText.startsWith('```json')) {
       resultText = resultText.substring(7);
       if (resultText.endsWith('```')) {
@@ -100,12 +172,21 @@ Return only valid JSON, without any markdown formatting block.
     }
 
     const jsonResult = JSON.parse(resultText);
+
+    // Normalize crop and variety
+    const normalized = normalizeCropData(
+      jsonResult.cropId,
+      jsonResult.cropName,
+      jsonResult.varietyId,
+      jsonResult.varietyName
+    );
+
     return {
-      cropId: jsonResult.cropId || null,
-      cropName: jsonResult.cropName || null,
-      varietyId: jsonResult.varietyId || null,
-      varietyName: jsonResult.varietyName || null,
-      confidence: jsonResult.confidence || 0
+      cropId: normalized.cropId || null,
+      cropName: normalized.cropName || null,
+      varietyId: normalized.varietyId || null,
+      varietyName: normalized.varietyName || null,
+      confidence: jsonResult.confidence || 0.9
     };
 
   } catch (error) {
@@ -115,5 +196,6 @@ Return only valid JSON, without any markdown formatting block.
 };
 
 module.exports = {
-  analyzeCropImage
+  analyzeCropImage,
+  normalizeCropData
 };

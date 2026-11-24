@@ -49,16 +49,16 @@ export function LanguageProvider({ children }) {
     }
   }, []);
 
-  // Translation lookup: t('landing.heroTitle1') → dot-notation key resolution
+  // Translation lookup: t('landing.heroTitle1', fallback) → dot-notation key resolution
   const t = useCallback(
-    (key) => {
+    (key, fallback) => {
       const keys = key.split('.');
       let value = translations[lang];
       for (const k of keys) {
-        if (value == null) return key; // Key not found — return key as fallback
+        if (value == null) return fallback !== undefined ? fallback : key;
         value = value[k];
       }
-      return value ?? key;
+      return value ?? (fallback !== undefined ? fallback : key);
     },
     [lang]
   );
@@ -68,6 +68,64 @@ export function LanguageProvider({ children }) {
       {children}
     </LanguageContext.Provider>
   );
+}
+
+/**
+ * Cleanly formats a mandi name to prevent raw keys like "mandis.kollam-market-kollam"
+ */
+export function formatMandiName(mandiId, fallbackName, t) {
+  if (mandiId && t) {
+    const translated = t(`mandis.${mandiId}`, null);
+    if (translated) return translated;
+  }
+  if (fallbackName && !fallbackName.startsWith('mandis.')) {
+    return fallbackName;
+  }
+  if (mandiId && typeof mandiId === 'string') {
+    const cleanId = mandiId.replace(/^mandis\./, '');
+    const cleaned = cleanId
+      .split('-')
+      .filter(Boolean)
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+    return cleaned ? `${cleaned} Mandi` : 'मंडी';
+  }
+  return fallbackName || 'मंडी';
+}
+
+/**
+ * Cleanly formats a crop name to prevent raw keys like "crops.eggplant"
+ */
+export function formatCropName(cropId, fallbackName, t) {
+  if (cropId && t) {
+    const translated = t(`crops.${cropId.toLowerCase()}`, null);
+    if (translated) return translated;
+  }
+  if (fallbackName && !fallbackName.startsWith('crops.')) {
+    return fallbackName;
+  }
+  return cropId ? (cropId.charAt(0).toUpperCase() + cropId.slice(1)) : (fallbackName || '');
+}
+
+/**
+ * Cleanly formats a variety name to prevent raw keys like "varieties.long_purple"
+ */
+export function formatVarietyName(varietyId, fallbackName, t) {
+  if (varietyId && t) {
+    const translated = t(`varieties.${varietyId.toLowerCase()}`, null);
+    if (translated) return translated;
+  }
+  if (fallbackName && !fallbackName.startsWith('varieties.')) {
+    return fallbackName;
+  }
+  if (varietyId && typeof varietyId === 'string') {
+    return varietyId
+      .replace(/^varieties\./, '')
+      .split('_')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+  return fallbackName || '';
 }
 
 /**

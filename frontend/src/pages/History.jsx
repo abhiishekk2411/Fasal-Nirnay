@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Clock, Loader2, AlertCircle } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import { getHistory } from '../services/decisionService';
-import { useTranslation } from '../i18n';
+import { useTranslation, formatMandiName, formatCropName } from '../i18n';
 
 export default function History() {
   const { t } = useTranslation();
@@ -74,7 +74,7 @@ export default function History() {
                     {entry.sell_now_vs_wait === 'sell_now' ? t('common.sellNow') : t('common.wait')}
                   </span>
                   <span className="badge badge-gray text-base">
-                    {t(`mandis.${entry.selectedMandiId}`) || entry.selectedMandiName}
+                    {formatMandiName(entry.selectedMandiId, entry.selectedMandiName, t)}
                   </span>
                 </div>
               </div>

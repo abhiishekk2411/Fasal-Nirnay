@@ -73,9 +73,8 @@ const VoiceInput = ({ onVoiceSuccess }) => {
         speakHindi(msg);
       } else if (event.error === 'network') {
         setStatus('error');
-        const msg = 'आवाज़ पहचानने की सेवा से कनेक्शन नहीं हो पाया। कृपया फिर कोशिश करें।';
+        const msg = 'आवाज़ पहचानने की सेवा से कनेक्शन नहीं हो पाया। (Brave ब्राउज़र Google Speech API को रोकता है)';
         setErrorMsg(msg);
-        speakHindi(msg);
       } else {
         setStatus('error');
         const msg = 'आवाज़ समझ नहीं आई। कृपया दोबारा कोशिश करें।';
@@ -166,8 +165,12 @@ const VoiceInput = ({ onVoiceSuccess }) => {
       'टमाटर': 'tomato', 'tomato': 'tomato', 'टोमेटो': 'tomato',
       'प्याज': 'onion', 'प्याज़': 'onion', 'onion': 'onion', 'कांदा': 'onion',
       'आलू': 'potato', 'potato': 'potato', 'बटाटा': 'potato',
+      'बैंगन': 'brinjal', 'brinjal': 'brinjal', 'baingan': 'brinjal', 'eggplant': 'brinjal', 'बैगन': 'brinjal',
       'गेहूँ': 'wheat', 'wheat': 'wheat', 'गेहूं': 'wheat',
       'धान': 'rice', 'चावल': 'rice', 'rice': 'rice',
+      'मिर्च': 'chilli', 'chilli': 'chilli',
+      'पत्तागोभी': 'cabbage', 'cabbage': 'cabbage',
+      'फूलगोभी': 'cauliflower', 'cauliflower': 'cauliflower',
       'कपास': 'cotton', 'cotton': 'cotton',
       'सोयाबीन': 'soybean', 'soybean': 'soybean',
       'मक्का': 'maize', 'maize': 'maize'
@@ -202,7 +205,12 @@ const VoiceInput = ({ onVoiceSuccess }) => {
       'नाशिक': 'Nashik', 'नासिक': 'Nashik', 'nashik': 'Nashik',
       'पुणे': 'Pune', 'pune': 'Pune',
       'मुंबई': 'Mumbai', 'mumbai': 'Mumbai',
-      'दिल्ली': 'Delhi', 'delhi': 'Delhi'
+      'दिल्ली': 'Delhi', 'delhi': 'Delhi',
+      'लासलगांव': 'Lasalgaon', 'lasalgaon': 'Lasalgaon',
+      'पिंपलगांव': 'Pimpalgaon', 'pimpalgaon': 'Pimpalgaon',
+      'नागपुर': 'Nagpur', 'nagpur': 'Nagpur',
+      'इंदौर': 'Indore', 'indore': 'Indore',
+      'कोल्हापुर': 'Kolhapur', 'kolhapur': 'Kolhapur'
     };
     let location = '';
     for (const [key, val] of Object.entries(locMap)) {
@@ -261,8 +269,8 @@ const VoiceInput = ({ onVoiceSuccess }) => {
     // Convert internal crop values back to Hindi for speech
     const cropNamesInHindi = {
       'tomato': 'टमाटर', 'onion': 'प्याज', 'potato': 'आलू',
-      'wheat': 'गेहूँ', 'rice': 'धान', 'cotton': 'कपास',
-      'soybean': 'सोयाबीन', 'maize': 'मक्का'
+      'brinjal': 'बैंगन', 'wheat': 'गेहूँ', 'rice': 'धान', 'cotton': 'कपास',
+      'soybean': 'सोयाबीन', 'maize': 'मक्का', 'chilli': 'मिर्च'
     };
     const speechCrop = cropNamesInHindi[crop] || crop;
     speakHindi(`आपकी जानकारी मिल गई है। फसल: ${speechCrop}, मात्रा: ${quantity} किलो, स्थान: ${location}`);
@@ -341,9 +349,26 @@ const VoiceInput = ({ onVoiceSuccess }) => {
           )}
 
           {errorMsg && status === 'error' && (
-            <div className="mb-4 p-4 bg-warning-50 text-warning-800 rounded-xl border border-warning-200 flex items-center gap-3 max-w-lg">
-              <AlertCircle className="w-6 h-6 text-warning-600 flex-shrink-0" />
-              <p className="text-base font-semibold text-left">{errorMsg}</p>
+            <div className="mb-4 w-full max-w-lg space-y-3">
+              <div className="p-4 bg-warning-50 text-warning-800 rounded-xl border border-warning-200 flex items-center gap-3">
+                <AlertCircle className="w-6 h-6 text-warning-600 flex-shrink-0" />
+                <p className="text-base font-semibold text-left">{errorMsg}</p>
+              </div>
+
+              {errorMsg.includes('Brave') && (
+                <div className="p-4 bg-blue-50 text-blue-900 rounded-xl border border-blue-200 text-left text-sm space-y-2">
+                  <p className="font-bold flex items-center gap-1.5 text-blue-950">
+                    <span>🦁</span> Brave ब्राउज़र में आवाज़ इनपुट कैसे चालू करें?
+                  </p>
+                  <p className="text-xs text-blue-800">
+                    Brave ब्राउज़र निजता (privacy) के कारण Google Speech API को डिफ़ॉल्ट रूप से रोकता है:
+                  </p>
+                  <ul className="text-xs list-disc list-inside space-y-1.5 text-blue-900">
+                    <li><strong>आसान तरीका:</strong> इस ऐप को <strong>Google Chrome</strong> या <strong>Edge</strong> में खोलें (जहाँ माइक्रोफ़ोन बिना किसी सेटिंग के काम करता है)।</li>
+                    <li><strong>Brave में अनुमति:</strong> <code>brave://settings/system</code> पर जाएं और <em>"Use Google services for speech recognition"</em> चालू करें।</li>
+                  </ul>
+                </div>
+              )}
             </div>
           )}
 
@@ -366,11 +391,47 @@ const VoiceInput = ({ onVoiceSuccess }) => {
             </div>
           )}
 
-          {status === 'idle' && (
-            <p className="mt-6 text-base text-surface-500 bg-surface-100 p-4 rounded-xl max-w-lg font-medium border border-surface-200">
-              {t('voice.example')}
+          {/* Quick Voice Test Chips */}
+          <div className="mt-6 w-full max-w-lg pt-4 border-t border-surface-200">
+            <p className="text-xs font-bold text-surface-500 uppercase tracking-wider mb-2 text-center">
+              या टेस्ट करने के लिए उदाहरण चुनें (One-Click Voice Test):
             </p>
-          )}
+            <div className="flex flex-wrap gap-2 justify-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setTranscript("मेरे पास 500 किलो टमाटर है नासिक में");
+                  setStatus('processing');
+                  processTranscript("मेरे पास 500 किलो टमाटर है नासिक में");
+                }}
+                className="text-xs font-medium px-3.5 py-1.5 rounded-full bg-surface-100 hover:bg-primary-100 text-surface-700 hover:text-primary-800 border border-surface-200 transition-colors cursor-pointer"
+              >
+                🎙️ 500 किलो टमाटर नासिक
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTranscript("300 किलो बैंगन पुणे");
+                  setStatus('processing');
+                  processTranscript("300 किलो बैंगन पुणे");
+                }}
+                className="text-xs font-medium px-3.5 py-1.5 rounded-full bg-surface-100 hover:bg-primary-100 text-surface-700 hover:text-primary-800 border border-surface-200 transition-colors cursor-pointer"
+              >
+                🎙️ 300 किलो बैंगन पुणे
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTranscript("800 किलो प्याज़ लासलगांव");
+                  setStatus('processing');
+                  processTranscript("800 किलो प्याज़ लासलगांव");
+                }}
+                className="text-xs font-medium px-3.5 py-1.5 rounded-full bg-surface-100 hover:bg-primary-100 text-surface-700 hover:text-primary-800 border border-surface-200 transition-colors cursor-pointer"
+              >
+                🎙️ 800 किलो प्याज़ लासलगांव
+              </button>
+            </div>
+          </div>
         </>
       )}
     </div>

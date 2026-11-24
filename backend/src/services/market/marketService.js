@@ -1,69 +1,85 @@
+/**
+ * Market Service — Orchestrates APMC Mandi data for crops and locations
+ * Fetches real mandis from Agmarknet API, with MongoDB persistence and caching.
+ * Completely purged hardcoded FALLBACK_MANDIS and FALLBACK_PRICES.
+ */
+
+const { fetchLiveAgmarknetPrices } = require('./agmarknetService');
+const { geocodeLocation } = require('../location/geocodingService');
 const Mandi = require('../../models/Mandi');
 const MarketPrice = require('../../models/MarketPrice');
+const { calculateHaversineDistance } = require('../location/distanceService');
 const mongoose = require('mongoose');
 
-const FALLBACK_MANDIS = [
-  { mandiId: 'pimpalgaon', name: 'Pimpalgaon Mandi', city: 'Pimpalgaon', state: 'Maharashtra', latitude: 20.1700, longitude: 73.9800, active: true },
-  { mandiId: 'lasalgaon', name: 'Lasalgaon Mandi', city: 'Lasalgaon', state: 'Maharashtra', latitude: 20.1400, longitude: 74.2200, active: true },
-  { mandiId: 'sinnar', name: 'Sinnar Mandi', city: 'Sinnar', state: 'Maharashtra', latitude: 19.8400, longitude: 73.9900, active: true },
-  { mandiId: 'dindori', name: 'Dindori Mandi', city: 'Dindori', state: 'Maharashtra', latitude: 20.2000, longitude: 73.8200, active: true },
-  { mandiId: 'manmad', name: 'Manmad Mandi', city: 'Manmad', state: 'Maharashtra', latitude: 20.2500, longitude: 74.4400, active: true }
-];
+const getMarketsByCropAndLocation = async (cropId, locationInput) => {
+  // 1. Resolve farmer location coordinates
+  let farmerCoords;
+  if (typeof locationInput === 'object' && locationInput.latitude != null && locationInput.longitude != null) {
+    farmerCoords = locationInput;
+  } else {
+    farmerCoords = await geocodeLocation(locationInput);
+  }
 
-const FALLBACK_PRICES = [
-  { cropId: 'tomato', mandiId: 'pimpalgaon', varietyId: 'hybrid', price: 24, unit: 'kg' },
-  { cropId: 'tomato', mandiId: 'lasalgaon', varietyId: 'hybrid', price: 22, unit: 'kg' },
-  { cropId: 'tomato', mandiId: 'sinnar', varietyId: 'hybrid', price: 21, unit: 'kg' },
-  { cropId: 'tomato', mandiId: 'dindori', varietyId: 'hybrid', price: 18, unit: 'kg' },
-  { cropId: 'tomato', mandiId: 'manmad', varietyId: 'hybrid', price: 26, unit: 'kg' }
-];
+  // 2. Fetch live data from Agmarknet API
+  try {
+    const liveMandis = await fetchLiveAgmarknetPrices(cropId, farmerCoords);
+    if (liveMandis && liveMandis.length > 0) {
+      return liveMandis;
+    }
+  } catch (apiErr) {
+    console.warn('[MarketService] Live Agmarknet fetch warning:', apiErr.message);
+  }
 
-const getMarketsByCropAndLocation = async (cropId, location) => {
-  let mandis = [];
-  let prices = [];
-
+  // 3. Fallback to MongoDB cached mandis and prices if Agmarknet returned 0 or timed out
   try {
     if (mongoose.connection.readyState === 1) {
-      mandis = await Mandi.find({ active: true }).lean();
-      if (mandis && mandis.length > 0) {
-        const mandiIds = mandis.map(m => m.mandiId);
-        prices = await MarketPrice.find({
+      const dbMandis = await Mandi.find({ active: true }).lean();
+      if (dbMandis && dbMandis.length > 0) {
+        const mandiIds = dbMandis.map(m => m.mandiId);
+        const prices = await MarketPrice.find({
           cropId: cropId.toLowerCase(),
           mandiId: { $in: mandiIds }
-        }).lean();
+        }).sort({ date: -1 }).lean();
+
+        if (prices.length > 0) {
+          const results = [];
+          for (const mandi of dbMandis) {
+            const p = prices.find(price => price.mandiId === mandi.mandiId);
+            if (p) {
+              const distanceKm = calculateHaversineDistance(
+                farmerCoords.latitude,
+                farmerCoords.longitude,
+                mandi.latitude,
+                mandi.longitude
+              );
+              results.push({
+                mandiId: mandi.mandiId,
+                mandiName: mandi.name,
+                city: mandi.city,
+                state: mandi.state,
+                latitude: mandi.latitude,
+                longitude: mandi.longitude,
+                distanceKm: Math.round(distanceKm),
+                cropId: p.cropId,
+                varietyId: p.varietyId,
+                price: p.price,
+                unit: p.unit
+              });
+            }
+          }
+          if (results.length > 0) {
+            results.sort((a, b) => a.distanceKm - b.distanceKm);
+            const radius250 = results.filter(r => r.distanceKm <= 250);
+            return radius250.length > 0 ? radius250 : results.slice(0, 5);
+          }
+        }
       }
     }
-  } catch (err) {
-    console.warn("DB Query Warning in marketService:", err.message);
+  } catch (dbErr) {
+    console.warn('[MarketService] DB query warning:', dbErr.message);
   }
 
-  // Fallback to static seed data if DB is empty or disconnected
-  if (!mandis || mandis.length === 0) {
-    mandis = FALLBACK_MANDIS;
-  }
-  if (!prices || prices.length === 0) {
-    prices = FALLBACK_PRICES.filter(p => p.cropId === cropId.toLowerCase());
-  }
-
-  // Combine them
-  const result = mandis.map(mandi => {
-    const mandiPrice = prices.find(p => p.mandiId === mandi.mandiId);
-    if (mandiPrice) {
-      return {
-        mandiId: mandi.mandiId,
-        mandiName: mandi.name,
-        latitude: mandi.latitude,
-        longitude: mandi.longitude,
-        cropId: mandiPrice.cropId,
-        varietyId: mandiPrice.varietyId,
-        price: mandiPrice.price,
-        unit: mandiPrice.unit
-      };
-    }
-    return null;
-  }).filter(item => item !== null);
-
-  return result;
+  return [];
 };
 
 module.exports = {
