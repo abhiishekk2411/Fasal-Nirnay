@@ -351,7 +351,7 @@ const VoiceInput = ({ onVoiceSuccess }) => {
           {errorMsg && status === 'error' && (
             <div className="mb-4 w-full max-w-lg space-y-3">
               <div className="p-4 bg-warning-50 text-warning-800 rounded-xl border border-warning-200 flex items-center gap-3">
-                <AlertCircle className="w-6 h-6 text-warning-600 flex-shrink-0" />
+                <AlertCircle className="w-6 h-6 text-warning-600 shrink-0" />
                 <p className="text-base font-semibold text-left">{errorMsg}</p>
               </div>
 
