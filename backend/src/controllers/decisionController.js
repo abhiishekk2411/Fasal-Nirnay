@@ -1,154 +1,49 @@
-const decisionEngine = require('../services/decision/decisionEngine');
-const marketService = require('../services/market/marketService');
-const trendService = require('../services/market/trendService');
-const { geocodeLocation } = require('../services/location/geocodingService');
-const { calculateHaversineDistance } = require('../services/location/distanceService');
-const { calculateTransportCost } = require('../services/decision/transportService');
-const { getWeatherForecast } = require('../services/weather/weatherService');
-const { calculateWeatherRisk } = require('../services/weather/weatherRiskService');
-const MarketPrice = require('../models/MarketPrice');
+const recommendationService = require('../services/decision/recommendationService');
 const DecisionHistory = require('../models/DecisionHistory');
 const mongoose = require('mongoose');
 
-// @desc    Analyze crop selling decision
+// @desc    Analyze crop selling decision (Web & API)
 // @route   POST /api/decision/analyze
 // @access  Public
 const analyzeDecision = async (req, res, next) => {
   try {
-    const { cropId, varietyId, quantityKg, location, coordinates } = req.body;
+    const { cropId, varietyId = 'hybrid', quantityKg, location, coordinates } = req.body;
 
-    if (!cropId || !varietyId || quantityKg == null || !location) {
+    if (!cropId || quantityKg == null || (!location && !coordinates)) {
       res.status(400);
-      throw new Error('कृपया फसल, किस्म, मात्रा और स्थान की जानकारी भरें।');
+      throw new Error('कृपया फसल, मात्रा और स्थान की जानकारी भरें। (Crop, quantity and location are required)');
     }
 
-    if (typeof location === 'string' && location.trim() === '') {
+    if (typeof location === 'string' && location.trim() === '' && !coordinates) {
       res.status(400);
-      throw new Error('स्थान की जानकारी खाली नहीं हो सकती।');
+      throw new Error('स्थान की जानकारी खाली नहीं हो सकती। (Location cannot be empty)');
     }
 
     const numericQuantity = parseFloat(quantityKg);
     if (isNaN(numericQuantity) || numericQuantity <= 0) {
       res.status(400);
-      throw new Error('मात्रा एक सही संख्या होनी चाहिए और 0 से अधिक होनी चाहिए।');
-    }
-    
-    // Override quantity with clean parsed value
-    req.body.quantityKg = numericQuantity;
-
-    // 1. Geocode farmer location
-    let farmerCoords;
-    try {
-      if (coordinates && coordinates.latitude != null && coordinates.longitude != null) {
-        farmerCoords = await geocodeLocation(coordinates);
-        if (location && typeof location === 'string' && !farmerCoords.displayName) {
-          farmerCoords.displayName = location;
-        }
-      } else {
-        farmerCoords = await geocodeLocation(location);
-      }
-    } catch (err) {
-      res.status(400);
-      throw new Error(`Location error: ${err.message}`);
+      throw new Error('मात्रा एक सही संख्या होनी चाहिए और 0 से अधिक होनी चाहिए। (Quantity must be positive)');
     }
 
-    // 2. Fetch Weather Forecast and Calculate Risk
-    const weatherData = await getWeatherForecast(farmerCoords.latitude, farmerCoords.longitude);
-    const weatherRisk = calculateWeatherRisk(weatherData, cropId);
-
-    // 3. Fetch relevant market data from Agmarknet / DB
-    const marketData = await marketService.getMarketsByCropAndLocation(cropId, farmerCoords);
-
-    if (!marketData || marketData.length === 0) {
-      res.status(404);
-      throw new Error(`इस फसल के लिए वर्तमान में आसपास की मंडियों का भाव उपलब्ध नहीं है। कृपया अन्य फसल चुनें। (No market data found for this crop)`);
-    }
-
-    // 4. Process each mandi: Distance, Transport, Trend, Risk
-    const mandisWithDetails = await Promise.all(marketData.map(async (m) => {
-      let mandiLat = m.latitude;
-      let mandiLon = m.longitude;
-      
-      if (!mandiLat || !mandiLon) {
-        try {
-          const resolved = await geocodeLocation(m.mandiName || m.mandiId);
-          mandiLat = resolved.latitude;
-          mandiLon = resolved.longitude;
-        } catch (mErr) {
-          mandiLat = farmerCoords.latitude;
-          mandiLon = farmerCoords.longitude;
-        }
-      }
-      
-      const distanceKm = m.distanceKm != null
-        ? m.distanceKm
-        : Math.round(calculateHaversineDistance(farmerCoords.latitude, farmerCoords.longitude, mandiLat, mandiLon));
-      
-      const transportCost = calculateTransportCost(distanceKm, quantityKg);
-      
-      // Calculate Risk Penalty
-      const expectedRevenue = m.price * quantityKg;
-      const riskPenalty = Math.round(expectedRevenue * (weatherRisk.riskPercentage / 100));
-      
-      // Fetch historical prices to get trend
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - 30);
-
-      let historicalPrices = [];
-      try {
-        if (mongoose.connection.readyState === 1) {
-          historicalPrices = await MarketPrice.find({
-            cropId: cropId.toLowerCase(),
-            mandiId: m.mandiId.toLowerCase(),
-            varietyId: varietyId.toLowerCase(),
-            date: { $gte: startDate }
-          }).sort({ date: 1 }).lean();
-        }
-      } catch (histErr) {
-        console.warn("Historical prices query warning:", histErr.message);
-      }
-
-      let trendData = { trend: 'stable', percentageChange: 0, estimatedRange: { min: m.price, max: m.price } };
-      if (historicalPrices && historicalPrices.length > 0) {
-        const calculatedTrend = trendService.calculateTrend(historicalPrices);
-        trendData = {
-          trend: calculatedTrend.trend,
-          trendPercentage: calculatedTrend.percentageChange,
-          estimatedRange: calculatedTrend.estimatedRange
-        };
-      }
-
-      return {
-        ...m,
-        distanceKm,
-        transportCost,
-        riskPenalty,
-        ...trendData
-      };
-    }));
-
-    // 5. Pass everything to pure Decision Engine
-    const decisionResult = decisionEngine.calculateDecision({
+    // Call unified recommendation pipeline
+    const result = await recommendationService.getRecommendation({
       cropId,
       varietyId,
-      quantityKg,
-      farmerLocation: location,
-      mandis: mandisWithDetails,
-      weatherRisk // Pass weather risk to engine for reasoning tags
+      quantityKg: numericQuantity,
+      location,
+      coordinates
     });
 
-    // 6. Save Decision to History (Non-blocking)
+    // Save Decision to History (Non-blocking)
     try {
-      const bestMandiId = decisionResult.bestMandi;
-      const bestMandi = decisionResult.rankedMandis.find(m => m.mandiId === bestMandiId) || decisionResult.rankedMandis[0];
-      
+      const bestMandi = result.bestMandiDetails;
       if (bestMandi && mongoose.connection.readyState === 1) {
         await DecisionHistory.create({
-          userId: 'demo_farmer_001', // Future proofing for auth
-          cropId: cropId,
-          varietyId: varietyId,
-          quantityKg: quantityKg,
-          farmerLocation: location,
+          userId: 'demo_farmer_001',
+          cropId: result.cropId,
+          varietyId: result.varietyId,
+          quantityKg: result.quantityKg,
+          farmerLocation: result.farmerLocation,
           selectedMandiId: bestMandi.mandiId,
           selectedMandiName: bestMandi.mandiName,
           selectedMandiPrice: bestMandi.price,
@@ -159,36 +54,42 @@ const analyzeDecision = async (req, res, next) => {
           trend: bestMandi.trend,
           trendPercentage: bestMandi.trendPercentage,
           sell_now_vs_wait: bestMandi.sell_now_vs_wait,
-          weatherRiskLevel: weatherRisk.riskLevel,
-          weatherRiskPercentage: weatherRisk.riskPercentage
+          weatherRiskLevel: result.weatherRisk.riskLevel,
+          weatherRiskPercentage: result.weatherRisk.riskPercentage,
+          timestamp: new Date()
         });
       }
-    } catch (historyErr) {
-      console.error("Failed to save Decision History:", historyErr.message);
-      // DO NOT fail the main request if DB history saving fails
+    } catch (histSaveErr) {
+      console.warn('History save warning:', histSaveErr.message);
     }
 
-    // 7. Return structured JSON
-    res.json({
+    // Return structured JSON matching 100% of the Frontend API Contract
+    return res.json({
       success: true,
       data: {
         farmerLocation: {
           input: location,
-          latitude: farmerCoords.latitude,
-          longitude: farmerCoords.longitude,
-          displayName: farmerCoords.displayName
+          latitude: result.farmerCoordinates.latitude,
+          longitude: result.farmerCoordinates.longitude,
+          displayName: result.farmerCoordinates.displayName || location
         },
         weather: {
-          ...weatherData,
-          riskLevel: weatherRisk.riskLevel,
-          riskPercentage: weatherRisk.riskPercentage,
-          cropPerishability: weatherRisk.cropPerishability
+          ...result.weatherData,
+          riskLevel: result.weatherRisk.riskLevel,
+          riskPercentage: result.weatherRisk.riskPercentage,
+          cropPerishability: result.weatherRisk.cropPerishability
         },
-        ...decisionResult
+        bestMandi: result.bestMandi,
+        rankedMandis: result.rankedMandis,
+        reasoningTags: result.reasoningTags,
+        provenance: result.provenance
       }
     });
 
   } catch (error) {
+    if (error.statusCode) {
+      res.status(error.statusCode);
+    }
     next(error);
   }
 };

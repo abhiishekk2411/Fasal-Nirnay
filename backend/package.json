@@ -11,7 +11,8 @@
     "test-trend": "node scripts/testTrend.js",
     "test-distance": "node scripts/testDistance.js",
     "test-transport": "node scripts/testTransport.js",
-    "test-weatherrisk": "node scripts/testWeatherRisk.js"
+    "test-weatherrisk": "node scripts/testWeatherRisk.js",
+    "test-ivr": "node scripts/testIvrSuite.js"
   },
   "keywords": [],
   "author": "",

@@ -1,10 +1,20 @@
 /**
  * Dynamic Geocoding Service using OpenStreetMap Nominatim
- * Includes an in-memory cache to prevent redundant API calls.
- * Completely removed hardcoded COMMON_LOCATIONS.
+ * Includes an in-memory cache and resilient fallbacks for key agricultural districts
+ * to ensure high availability during telephony/IVR calls and network timeouts.
  */
 
 const locationCache = new Map();
+
+// High-availability fallback coordinates for primary agricultural regions
+const AGRICULTURAL_FALLBACKS = {
+  'nashik': { latitude: 19.9975, longitude: 73.7898, displayName: 'Nashik, Maharashtra, India', city: 'Nashik', district: 'Nashik', state: 'Maharashtra' },
+  'pune': { latitude: 18.5204, longitude: 73.8567, displayName: 'Pune, Maharashtra, India', city: 'Pune', district: 'Pune', state: 'Maharashtra' },
+  'solapur': { latitude: 17.6599, longitude: 75.9064, displayName: 'Solapur, Maharashtra, India', city: 'Solapur', district: 'Solapur', state: 'Maharashtra' },
+  'nagpur': { latitude: 21.1458, longitude: 79.0882, displayName: 'Nagpur, Maharashtra, India', city: 'Nagpur', district: 'Nagpur', state: 'Maharashtra' },
+  'pimpalgaon': { latitude: 20.1700, longitude: 73.9800, displayName: 'Pimpalgaon, Maharashtra, India', city: 'Pimpalgaon', district: 'Nashik', state: 'Maharashtra' },
+  'lasalgaon': { latitude: 20.1400, longitude: 74.2200, displayName: 'Lasalgaon, Maharashtra, India', city: 'Lasalgaon', district: 'Nashik', state: 'Maharashtra' }
+};
 
 /**
  * Reverse geocodes coordinates to a human-readable location with state and district.
@@ -15,10 +25,18 @@ const reverseGeocode = async (latitude, longitude) => {
     return locationCache.get(cacheKey);
   }
 
+  // Check known fallbacks by proximity
+  for (const fallback of Object.values(AGRICULTURAL_FALLBACKS)) {
+    if (Math.abs(fallback.latitude - latitude) < 0.05 && Math.abs(fallback.longitude - longitude) < 0.05) {
+      locationCache.set(cacheKey, fallback);
+      return fallback;
+    }
+  }
+
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
 
     const response = await fetch(url, {
       method: 'GET',
@@ -56,7 +74,7 @@ const reverseGeocode = async (latitude, longitude) => {
     locationCache.set(cacheKey, result);
     return result;
   } catch (error) {
-    console.error('Reverse Geocoding Error:', error.message);
+    console.warn('[Geocoding] Reverse Geocoding Network Warning:', error.message);
     return {
       latitude: parseFloat(latitude),
       longitude: parseFloat(longitude),
@@ -87,19 +105,27 @@ const geocodeLocation = async (locationInput) => {
 
   const normalizedInput = locationInput.trim().toLowerCase();
 
-  // Check cache
+  // 1. Check in-memory cache
   if (locationCache.has(normalizedInput)) {
     return locationCache.get(normalizedInput);
   }
 
+  // 2. Check known agricultural fallback match
+  for (const [key, fallback] of Object.entries(AGRICULTURAL_FALLBACKS)) {
+    if (normalizedInput === key || normalizedInput.startsWith(key)) {
+      locationCache.set(normalizedInput, fallback);
+      return fallback;
+    }
+  }
+
+  // 3. Query Nominatim API
   try {
-    // Add ", India" for Indian agriculture focus if not present
     const queryTerm = normalizedInput.includes('india') ? normalizedInput : `${normalizedInput}, India`;
     const query = encodeURIComponent(queryTerm);
     const url = `https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1&addressdetails=1`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
 
     const response = await fetch(url, {
       method: 'GET',
@@ -141,7 +167,13 @@ const geocodeLocation = async (locationInput) => {
     return result;
 
   } catch (error) {
-    console.error('Geocoding Error:', error.message);
+    console.warn(`[Geocoding] Nominatim lookup warning for "${locationInput}":`, error.message);
+    // If agricultural fallback matches partially
+    for (const [key, fallback] of Object.entries(AGRICULTURAL_FALLBACKS)) {
+      if (normalizedInput.includes(key)) {
+        return fallback;
+      }
+    }
     if (error.message.includes('Location not found')) {
       throw new Error(`स्थान "${locationInput}" नहीं मिला। कृपया अपने ज़िले या राज्य का नाम साथ लिखकर पुनः प्रयास करें।`);
     }
