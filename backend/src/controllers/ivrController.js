@@ -217,6 +217,7 @@ const analyzeIvrDecision = async (req, res, next) => {
         ...entities,
         recommendation: result,
         speechTextHindi,
+        recommendationState: 'ready',
         fromNumber: parsed.fromNumber
       });
     }
@@ -274,6 +275,42 @@ const analyzeIvrDecision = async (req, res, next) => {
   }
 };
 
+const calculateSessionRecommendation = async (callSid, session) => {
+  if (ivrSessionStore.get(callSid) !== session) return;
+
+  try {
+    const result = await recommendationService.getRecommendation({
+      cropId: session.cropId,
+      varietyId: session.varietyId,
+      quantityKg: session.quantityKg,
+      location: session.location,
+      coordinates: session.coordinates
+    });
+    const speechTextHindi = buildRecommendationSpeechHindi({
+      cropNameHi: session.cropNameHi,
+      quantityKg: session.quantityKg,
+      locationNameHi: session.locationNameHi,
+      bestMandi: result.bestMandiDetails,
+      weatherRisk: result.weatherRisk
+    });
+
+    // A later selection, expiration, or callback may have replaced this session.
+    if (ivrSessionStore.get(callSid) === session) {
+      ivrSessionStore.set(callSid, {
+        recommendation: result,
+        recommendationState: 'ready',
+        speechTextHindi,
+        step: 'recommendation_ready'
+      });
+    }
+  } catch {
+    if (ivrSessionStore.get(callSid) === session) {
+      ivrSessionStore.set(callSid, { recommendationState: 'failed' });
+      console.error('[IVR] Background recommendation failed.');
+    }
+  }
+};
+
 /**
  * @desc    Multi-step IVR Passthru handler (GET/POST /api/ivr/step)
  *          Allows multi-applet flow (Crop -> Quantity -> Location) with session tracking.
@@ -304,12 +341,17 @@ const handleIvrStep = async (req, res, next) => {
       if (!Object.hasOwn(IVR_CROPS, cropDigit)) {
         return sendPlainText(res, 400, buildErrorSpeechHindi('INVALID_CROP'));
       }
+      if (session?.cropDigit === cropDigit) {
+        return sendPlainText(res, 200, 'OK');
+      }
       ivrSessionStore.set(callSid, {
         cropDigit,
         cropId: cropConfig.id,
         cropNameHi: cropConfig.nameHi,
         varietyId: cropConfig.varietyId,
         quantityKg: undefined,
+        recommendationState: undefined,
+        recommendation: undefined,
         speechTextHindi: undefined,
         step: 'crop_selected'
       });
@@ -325,10 +367,15 @@ const handleIvrStep = async (req, res, next) => {
       if (!session?.cropId) {
         return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
       }
+      if (session.quantityKg && session.quantityDigit === quantityDigit) {
+        return sendPlainText(res, 200, 'OK');
+      }
       ivrSessionStore.set(callSid, {
         quantityDigit,
         quantityKg: qtyConfig.kg,
         quantityLabelHi: qtyConfig.labelHi,
+        recommendationState: undefined,
+        recommendation: undefined,
         speechTextHindi: undefined,
         step: 'quantity_selected'
       });
@@ -343,42 +390,22 @@ const handleIvrStep = async (req, res, next) => {
       if (!session?.cropId || !session.quantityKg) {
         return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
       }
+      if (session.locationDigit === locationDigit && session.recommendationState) {
+        return sendPlainText(res, 200, 'OK');
+      }
       const locConfig = IVR_LOCATIONS[locationDigit];
       const current = ivrSessionStore.set(callSid, {
         locationDigit,
         location: locConfig.name,
         locationNameHi: locConfig.nameHi,
         coordinates: { latitude: locConfig.lat, longitude: locConfig.lon },
+        recommendationState: 'pending',
+        recommendation: undefined,
         speechTextHindi: undefined,
         step: 'location_selected'
       });
 
-      // Calculate recommendation with gathered inputs
-      const result = await recommendationService.getRecommendation({
-        cropId: current.cropId,
-        varietyId: current.varietyId,
-        quantityKg: current.quantityKg,
-        location: current.location,
-        coordinates: current.coordinates
-      });
-
-      const speechTextHindi = buildRecommendationSpeechHindi({
-        cropNameHi: current.cropNameHi,
-        quantityKg: current.quantityKg,
-        locationNameHi: current.locationNameHi,
-        bestMandi: result.bestMandiDetails,
-        weatherRisk: result.weatherRisk
-      });
-
-      if (ivrSessionStore.get(callSid) !== current) {
-        return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
-      }
-      ivrSessionStore.set(callSid, {
-        recommendation: result,
-        speechTextHindi,
-        step: 'recommendation_ready'
-      });
-
+      setImmediate(calculateSessionRecommendation, callSid, current);
       return sendPlainText(res, 200, 'OK');
     }
 
@@ -396,6 +423,12 @@ const handleIvrStep = async (req, res, next) => {
 const handleIvrResponse = (req, res) => {
   const { callSid } = parseIvrInput(req);
   const session = ivrSessionStore.get(callSid);
+  if (session?.recommendationState === 'pending') {
+    return sendPlainText(res, 200, buildErrorSpeechHindi('RECOMMENDATION_PENDING'));
+  }
+  if (session?.recommendationState === 'failed') {
+    return sendPlainText(res, 200, buildErrorSpeechHindi('RECOMMENDATION_FAILED'));
+  }
   return sendPlainText(res, 200, session?.speechTextHindi || buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
 };
 

@@ -12,6 +12,10 @@
  */
 
 const assert = require('assert');
+const { randomBytes } = require('node:crypto');
+const { once } = require('node:events');
+const { setImmediate: nextTurn } = require('node:timers/promises');
+const express = require('express');
 const mongoose = require('mongoose');
 const {
   IVR_CROPS,
@@ -469,6 +473,102 @@ async function runAllTests() {
       assert.strictEqual(recommendationCalls, 0, 'HEAD requests must NEVER trigger recommendation calculation');
     } finally {
       recommendationService.getRecommendation = origGet;
+    }
+  });
+
+  await testAsync('Location acknowledges a blocked engine and Greetings expose isolated pending, ready and failed states', async () => {
+    const token = randomBytes(32).toString('hex');
+    const originalSecret = process.env.EXOTEL_WEBHOOK_SECRET;
+    const originalGet = recommendationService.getRecommendation;
+    const jobs = [];
+    recommendationService.getRecommendation = (input) => new Promise((resolve, reject) => {
+      jobs.push({ input, resolve, reject });
+    });
+    process.env.EXOTEL_WEBHOOK_SECRET = token;
+
+    const app = express();
+    app.use('/api/ivr', require('../src/routes/ivrRoutes'));
+    const server = app.listen(0, '127.0.0.1');
+    try {
+      await once(server, 'listening');
+      const request = (path, callSid, params = {}, method = 'GET') => {
+        const query = new URLSearchParams({ token, CallSid: callSid, ...params });
+        return fetch(`http://127.0.0.1:${server.address().port}/api/ivr/${path}?${query}`, {
+          method,
+          signal: AbortSignal.timeout(2000)
+        });
+      };
+      const select = async (sid, step, digits, method) => {
+        const response = await request('step', sid, { step, digits }, method);
+        assert.strictEqual(response.status, 200);
+        if (method !== 'HEAD') assert.strictEqual(await response.text(), 'OK');
+      };
+      const greeting = async (sid, expected, state) => {
+        const get = await request('response', sid);
+        const head = await request('response', sid, {}, 'HEAD');
+        assert.strictEqual(head.status, get.status);
+        assert.strictEqual(get.headers.get('content-type'), 'text/plain');
+        for (const name of ['content-type', 'content-length', 'etag', 'cache-control']) {
+          assert.strictEqual(head.headers.get(name), get.headers.get(name));
+        }
+        assert.strictEqual(await head.text(), '');
+        assert.strictEqual(await get.text(), expected);
+        assert.strictEqual(ivrSessionStore.get(sid)?.recommendationState, state);
+      };
+      const complete = (job, bestMandiDetails) => job.resolve({ bestMandiDetails, weatherRisk: {} });
+      const first = 'background_first';
+      const second = 'background_second';
+      await select(first, 'crop', '"2"');
+      await select(first, 'quantity', '3');
+      await select(second, 'crop', '1');
+      await select(second, 'quantity', '2');
+
+      await select(first, 'location', '1', 'HEAD');
+      assert.strictEqual(jobs.length, 0);
+      const start = performance.now();
+      await select(first, 'location', '1');
+      console.log(`Location Passthru loopback HTTP response: ${(performance.now() - start).toFixed(2)} ms (engine still pending)`);
+      assert.strictEqual(ivrSessionStore.get(first).location, 'Nashik');
+      await select(first, 'location', '1');
+      await greeting(first, buildErrorSpeechHindi('RECOMMENDATION_PENDING'), 'pending');
+      assert.strictEqual(jobs.length, 1);
+      assert.strictEqual(ivrSessionStore.get(second).recommendationState, undefined);
+
+      await select(first, 'location', '2');
+      await select(second, 'location', '4');
+      assert.strictEqual(jobs.length, 3);
+      assert.deepStrictEqual(jobs.map(({ input }) => [input.cropId, input.quantityKg, input.location]), [
+        ['onion', 1200, 'Nashik'], ['onion', 1200, 'Pune'], ['tomato', 800, 'Nagpur']
+      ]);
+      complete(jobs[1], testMandiFixture[0]);
+      jobs[2].reject(new Error('Controlled upstream failure'));
+      await nextTurn();
+      const savedSpeech = ivrSessionStore.get(first).speechTextHindi;
+      assert.ok(savedSpeech.includes('Pimpalgaon Mandi'));
+      complete(jobs[0], testMandiFixture[1]);
+      await nextTurn();
+      await greeting(first, savedSpeech, 'ready');
+      await greeting(second, buildErrorSpeechHindi('RECOMMENDATION_FAILED'), 'failed');
+      const repeat = await request('repeat', first, { digits: '1' });
+      assert.strictEqual(await repeat.text(), savedSpeech);
+      await select(first, 'location', '2');
+      await select(second, 'location', '4');
+      assert.strictEqual(jobs.length, 3);
+
+      await select(second, 'location', '3');
+      assert.strictEqual(jobs.length, 4);
+      const callback = await request('callback', second);
+      assert.strictEqual(callback.status, 200);
+      complete(jobs[3], testMandiFixture[0]);
+      await nextTurn();
+      assert.strictEqual(ivrSessionStore.get(second), null);
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      recommendationService.getRecommendation = originalGet;
+      if (originalSecret === undefined) delete process.env.EXOTEL_WEBHOOK_SECRET;
+      else process.env.EXOTEL_WEBHOOK_SECRET = originalSecret;
+      ivrSessionStore.clear();
     }
   });
 
