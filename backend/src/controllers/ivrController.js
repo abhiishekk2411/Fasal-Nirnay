@@ -1,230 +1,479 @@
-const decisionEngine = require('../services/decision/decisionEngine');
-const marketService = require('../services/market/marketService');
-const trendService = require('../services/market/trendService');
-const { geocodeLocation } = require('../services/location/geocodingService');
-const { calculateHaversineDistance } = require('../services/location/distanceService');
-const { calculateTransportCost } = require('../services/decision/transportService');
-const { getWeatherForecast } = require('../services/weather/weatherService');
-const { calculateWeatherRisk } = require('../services/weather/weatherRiskService');
-const MarketPrice = require('../models/MarketPrice');
-const mongoose = require('mongoose');
+const recommendationService = require('../services/decision/recommendationService');
+const ivrSessionStore = require('../services/ivr/ivrSessionStore');
+const {
+  buildRecommendationSpeechHindi,
+  buildErrorSpeechHindi,
+  buildGoodbyeSpeechHindi
+} = require('../services/ivr/ivrSpeechService');
+const {
+  IVR_CROPS,
+  IVR_QUANTITIES,
+  IVR_LOCATIONS,
+  sanitizeDigits
+} = require('../config/ivrConfig');
 
-// Helper to map DTMF digits to actual inputs
-const mapIvrInputs = (cropDigit, quantityDigit, locationDigit) => {
-  let cropId = 'tomato';
-  let varietyId = 'hybrid';
-  let quantityKg = 800;
-  let location = 'Nashik';
+/**
+ * Extracts and maps IVR input parameters from query and body.
+ */
+const parseIvrInput = (req) => {
+  const data = { ...req.query, ...req.body };
 
-  // Crop Mapping
-  if (cropDigit === '1') {
-    cropId = 'tomato';
-    varietyId = 'hybrid';
-  } else if (cropDigit === '2') {
-    cropId = 'onion';
-    varietyId = 'red';
+  const sid = data.CallSid || data.callSid || data.CallSID;
+  const callSid = typeof sid === 'string' && /^[\w-]{1,128}$/.test(sid) ? sid : null;
+  const fromNumber = data.From || data.from || data.CallFrom || null;
+  const rawDigits = sanitizeDigits(data.digits || data.Digits || data.digit || '');
+
+  let cropDigit = sanitizeDigits(data.cropDigit || data.crop_digit || '');
+  let quantityDigit = sanitizeDigits(data.quantityDigit || data.quantity_digit || '');
+  let locationDigit = sanitizeDigits(data.locationDigit || data.location_digit || '');
+
+  // If a multi-digit string was gathered by Exotel (e.g. digits="121")
+  if (rawDigits.length >= 3) {
+    cropDigit = rawDigits[0];
+    quantityDigit = rawDigits[1];
+    locationDigit = rawDigits[2];
+  } else if (rawDigits.length === 1 && !cropDigit) {
+    cropDigit = rawDigits;
   }
 
-  // Quantity Mapping
-  if (quantityDigit === '1') {
-    quantityKg = 400;
-  } else if (quantityDigit === '2') {
-    quantityKg = 800;
-  } else if (quantityDigit === '3') {
-    quantityKg = 1200;
-  }
+  // Allow direct string/numeric names for web or API testing (e.g. crop=tomato)
+  const directCrop = data.crop || data.cropId;
+  const directQuantity = data.quantity || data.quantityKg;
+  const directLocation = data.location;
+  const directVariety = data.variety || data.varietyId;
 
-  // Location Mapping (Fixed to Nashik for demo, ignoring digit if provided)
-  if (locationDigit === '1' || locationDigit === undefined) {
-    location = 'Nashik';
-  }
-
-  return { cropId, varietyId, quantityKg, location };
+  return {
+    callSid,
+    fromNumber,
+    rawDigits,
+    cropDigit,
+    quantityDigit,
+    locationDigit,
+    directCrop,
+    directQuantity,
+    directLocation,
+    directVariety,
+    mode: data.mode,
+    step: data.step,
+    isExotelMode: data.mode === 'exotel' || (req.headers.accept && req.headers.accept.includes('text/plain'))
+  };
 };
 
-// @desc    Analyze crop selling decision for IVR (Exotel Passthru)
-// @route   POST/GET /api/ivr/analyze
-// @access  Public
+/**
+ * Resolves inputs into validated domain entities using IVR DTMF config.
+ */
+const resolveIvrEntities = (parsed) => {
+  let cropId, cropNameHi, varietyId;
+  let quantityKg, quantityLabelHi;
+  let location, locationNameHi, coordinates;
+
+  // 1. Resolve Crop
+  if (parsed.cropDigit) {
+    const cropConfig = IVR_CROPS[parsed.cropDigit];
+    if (!Object.hasOwn(IVR_CROPS, parsed.cropDigit)) {
+      const err = new Error('Invalid crop choice. Press 1 for Tomato, 2 for Onion, 3 for Potato, 4 for Wheat.');
+      err.code = 'INVALID_CROP';
+      err.statusCode = 400;
+      throw err;
+    }
+    cropId = cropConfig.id;
+    cropNameHi = cropConfig.nameHi;
+    varietyId = cropConfig.varietyId;
+  } else if (parsed.directCrop) {
+    cropId = String(parsed.directCrop).toLowerCase();
+    const matchedCrop = Object.values(IVR_CROPS).find(c => c.id === cropId);
+    cropNameHi = matchedCrop ? matchedCrop.nameHi : cropId;
+    varietyId = parsed.directVariety || (matchedCrop ? matchedCrop.varietyId : 'hybrid');
+  }
+
+  // 2. Resolve Quantity
+  if (parsed.quantityDigit) {
+    const qtyConfig = IVR_QUANTITIES[parsed.quantityDigit];
+    if (!Object.hasOwn(IVR_QUANTITIES, parsed.quantityDigit)) {
+      const err = new Error('Invalid quantity choice. Press 1 for 400kg, 2 for 800kg, 3 for 1200kg, 4 for 2000kg.');
+      err.code = 'INVALID_QUANTITY';
+      err.statusCode = 400;
+      throw err;
+    }
+    quantityKg = qtyConfig.kg;
+    quantityLabelHi = qtyConfig.labelHi;
+  } else if (parsed.directQuantity != null) {
+    const parsedQty = parseFloat(parsed.directQuantity);
+    if (isNaN(parsedQty) || parsedQty <= 0) {
+      const err = new Error('Invalid quantity provided. Must be a positive number.');
+      err.code = 'INVALID_QUANTITY';
+      err.statusCode = 400;
+      throw err;
+    }
+    quantityKg = parsedQty;
+    quantityLabelHi = `${parsedQty} किलो`;
+  }
+
+  // 3. Resolve Location (Default to Nashik if digit omitted)
+  if (parsed.locationDigit) {
+    const locConfig = IVR_LOCATIONS[parsed.locationDigit];
+    if (!Object.hasOwn(IVR_LOCATIONS, parsed.locationDigit)) {
+      const err = new Error('Invalid location choice. Press 1 for Nashik, 2 for Pune, 3 for Solapur, 4 for Nagpur.');
+      err.code = 'INVALID_LOCATION';
+      err.statusCode = 400;
+      throw err;
+    }
+    location = locConfig.name;
+    locationNameHi = locConfig.nameHi;
+    coordinates = { latitude: locConfig.lat, longitude: locConfig.lon };
+  } else if (parsed.directLocation) {
+    location = String(parsed.directLocation).trim();
+    const matchedLoc = Object.values(IVR_LOCATIONS).find(l => l.name.toLowerCase() === location.toLowerCase());
+    locationNameHi = matchedLoc ? matchedLoc.nameHi : location;
+    if (matchedLoc) {
+      coordinates = { latitude: matchedLoc.lat, longitude: matchedLoc.lon };
+    }
+  } else {
+    // Graceful default for IVR demo
+    location = IVR_LOCATIONS['1'].name;
+    locationNameHi = IVR_LOCATIONS['1'].nameHi;
+    coordinates = { latitude: IVR_LOCATIONS['1'].lat, longitude: IVR_LOCATIONS['1'].lon };
+  }
+
+  return {
+    cropId,
+    cropNameHi,
+    varietyId,
+    quantityKg,
+    quantityLabelHi,
+    location,
+    locationNameHi,
+    coordinates
+  };
+};
+
+/**
+ * Sends a plain text response with Content-Type: text/plain (no charset suffix).
+ * Passing a Buffer prevents Express from automatically appending '; charset=utf-8'.
+ * Required by Exotel Dynamic Greeting TTS URL specification.
+ */
+const sendPlainText = (res, statusCode, text) => {
+  res.setHeader('Content-Type', 'text/plain');
+  return res.status(statusCode).send(Buffer.from(String(text), 'utf-8'));
+};
+
+/**
+ * @desc    Main IVR Analysis Handler (GET/POST /api/ivr/analyze)
+ *          Can return structured JSON or text/plain for Exotel Dynamic TTS.
+ */
 const analyzeIvrDecision = async (req, res, next) => {
-  try {
-    // Exotel Passthru sends data usually via GET or POST depending on setup.
-    // We check both query and body to be tolerant.
-    const inputData = { ...req.query, ...req.body };
-    
-    // Log safely, avoid logging headers or full request objects
-    console.log('[IVR] Received request parameters:', Object.keys(inputData));
+  const parsed = parseIvrInput(req);
 
-    // Support both direct values ('tomato') or digit mapping ('1')
-    let cropInput = inputData.crop || inputData.cropDigit;
-    let quantityInput = inputData.quantity || inputData.quantityDigit;
-    let locationInput = inputData.location || inputData.locationDigit;
-    
-    // Parse 'digits' parameter if provided (e.g. digits=121)
-    if (inputData.digits && typeof inputData.digits === 'string' && inputData.digits.length >= 3) {
-      cropInput = inputData.digits[0];
-      quantityInput = inputData.digits[1];
-      locationInput = inputData.digits[2];
-    }
-    
-    // Map inputs if they are just digits
-    let cropId, varietyId, quantityKg, location;
-    
-    // Strict validation for demo IVR DTMF
-    if (['1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(String(cropInput))) {
-      if (!['1', '2'].includes(String(cropInput))) {
-        return res.json({ success: false, message: "Invalid crop selection. Please press 1 for Tomato, 2 for Onion." });
-      }
-      if (!['1', '2', '3'].includes(String(quantityInput))) {
-        return res.json({ success: false, message: "Invalid quantity selection. Please press 1, 2, or 3." });
-      }
-      
-      const mapped = mapIvrInputs(String(cropInput), String(quantityInput), String(locationInput));
-      cropId = mapped.cropId;
-      varietyId = mapped.varietyId;
-      quantityKg = mapped.quantityKg;
-      location = mapped.location;
+  // Exotel HEAD probe check - do not mutate session or trigger calculations
+  if (req.method === 'HEAD') {
+    if (parsed.isExotelMode) {
+      res.setHeader('Content-Type', 'text/plain');
     } else {
-      // Allow direct passing for testing (e.g. crop=tomato)
-      cropId = cropInput;
-      varietyId = inputData.variety || 'hybrid';
-      quantityKg = parseFloat(quantityInput);
-      location = locationInput;
+      res.setHeader('Content-Type', 'application/json');
+    }
+    return res.status(200).end();
+  }
+
+  try {
+    const entities = resolveIvrEntities(parsed);
+
+    if (!entities.cropId) {
+      const err = new Error('Missing crop selection.');
+      err.code = 'INVALID_CROP';
+      err.statusCode = 400;
+      throw err;
     }
 
-    if (!cropId || !quantityKg || !location) {
-      return res.json({
-        success: false,
-        message: "Invalid inputs provided for IVR analysis."
+    if (!entities.quantityKg) {
+      const err = new Error('Missing quantity selection.');
+      err.code = 'INVALID_QUANTITY';
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Call unified recommendation pipeline
+    const result = await recommendationService.getRecommendation({
+      cropId: entities.cropId,
+      varietyId: entities.varietyId,
+      quantityKg: entities.quantityKg,
+      location: entities.location,
+      coordinates: entities.coordinates
+    });
+
+    const bestMandi = result.bestMandiDetails;
+
+    // Generate dynamic Hindi speech script for Exotel TTS
+    const speechTextHindi = buildRecommendationSpeechHindi({
+      cropNameHi: entities.cropNameHi,
+      quantityKg: entities.quantityKg,
+      locationNameHi: entities.locationNameHi,
+      bestMandi,
+      weatherRisk: result.weatherRisk
+    });
+
+    // Store in session if CallSid is present
+    if (parsed.callSid) {
+      ivrSessionStore.set(parsed.callSid, {
+        ...entities,
+        recommendation: result,
+        speechTextHindi,
+        recommendationState: 'ready',
+        fromNumber: parsed.fromNumber
       });
     }
 
-    const isExotelMode = inputData.mode === 'exotel';
-
-    // Helper to send response based on mode
-    const sendResponse = (success, message, data = {}) => {
-      if (isExotelMode) {
-        res.type('text/plain');
-        return res.send(message);
-      }
-      return res.json({ success, message, ...data });
-    };
-
-    // 1. Geocode farmer location
-    let farmerCoords;
-    try {
-      farmerCoords = await geocodeLocation(location);
-    } catch (err) {
-      console.error('[IVR] Geocoding Error:', err.message);
-      return sendResponse(false, "Sthaan ka pata nahi lag paya.");
+    // Return plain text if Exotel mode or text/plain requested
+    if (parsed.isExotelMode) {
+      return sendPlainText(res, 200, speechTextHindi);
     }
 
-    // 2. Fetch Weather Forecast and Calculate Risk
-    let weatherRisk;
-    try {
-      const weatherData = await getWeatherForecast(farmerCoords.latitude, farmerCoords.longitude);
-      weatherRisk = calculateWeatherRisk(weatherData, cropId);
-    } catch (err) {
-      console.warn('[IVR] Weather fallback:', err.message);
-      weatherRisk = { riskLevel: 'low', riskPercentage: 0, cropPerishability: 'low' }; // Safe fallback
-    }
-
-    // 3. Fetch relevant market data from DB
-    const marketData = await marketService.getMarketsByCropAndLocation(cropId, location);
-
-    if (!marketData || marketData.length === 0) {
-      return sendResponse(false, "Is fasal ke liye abhi mandi ka bhav uplabdh nahi hai.");
-    }
-
-    // 4. Process each mandi: Distance, Transport, Trend, Risk
-    const mandisWithDetails = await Promise.all(marketData.map(async (m) => {
-      const mandiLat = m.latitude;
-      const mandiLon = m.longitude;
-      
-      let distanceKm = 50; 
-      if (mandiLat && mandiLon) {
-        distanceKm = calculateHaversineDistance(farmerCoords.latitude, farmerCoords.longitude, mandiLat, mandiLon);
-      }
-      
-      const transportCost = calculateTransportCost(distanceKm, quantityKg);
-      
-      const expectedRevenue = m.price * quantityKg;
-      const riskPenalty = Math.round(expectedRevenue * (weatherRisk.riskPercentage / 100));
-      
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - 30);
-
-      let historicalPrices = [];
-      try {
-        if (mongoose.connection.readyState === 1) {
-          historicalPrices = await MarketPrice.find({
-            cropId: cropId.toLowerCase(),
-            mandiId: m.mandiId.toLowerCase(),
-            varietyId: varietyId.toLowerCase(),
-            date: { $gte: startDate }
-          }).sort({ date: 1 }).lean();
-        }
-      } catch (histErr) {
-        // Suppress
-      }
-
-      let trendData = { trend: 'stable', percentageChange: 0, estimatedRange: { min: m.price, max: m.price } };
-      if (historicalPrices && historicalPrices.length > 0) {
-        const calculatedTrend = trendService.calculateTrend(historicalPrices);
-        trendData = {
-          trend: calculatedTrend.trend,
-          trendPercentage: calculatedTrend.percentageChange,
-          estimatedRange: calculatedTrend.estimatedRange
-        };
-      }
-
-      return {
-        ...m,
-        distanceKm,
-        transportCost,
-        riskPenalty,
-        ...trendData
-      };
-    }));
-
-    // 5. Pass everything to pure Decision Engine
-    const decisionResult = decisionEngine.calculateDecision({
-      cropId,
-      varietyId,
-      quantityKg,
-      farmerLocation: location,
-      mandis: mandisWithDetails,
-      weatherRisk
-    });
-
-    // 6. Return simplified, predictable JSON response for Exotel
-    const bestMandiId = decisionResult.bestMandi;
-    const bestMandiObj = decisionResult.rankedMandis.find(m => m.mandiId === bestMandiId) || decisionResult.rankedMandis[0];
-
-    const recommendationMsg = `Aapke diye gaye details ke anusaar ${bestMandiObj.mandiName} ek behtar vikalp hai. Aapki anumanit shuddh kamai ${bestMandiObj.expectedNetReturn} rupaye hai.`;
-
-    return sendResponse(true, recommendationMsg, {
-      mandiName: bestMandiObj.mandiName,
-      expectedNetReturn: bestMandiObj.expectedNetReturn,
-      sellNow: bestMandiObj.sell_now_vs_wait === 'sell_now',
-      trend: bestMandiObj.trend,
-      weatherRisk: weatherRisk.riskLevel
+    // Return rich structured JSON for web/API consumers
+    return res.status(200).json({
+      success: true,
+      callSid: parsed.callSid,
+      inputs: {
+        crop: entities.cropId,
+        cropHindi: entities.cropNameHi,
+        variety: entities.varietyId,
+        quantityKg: entities.quantityKg,
+        quantityLabel: entities.quantityLabelHi,
+        location: entities.location,
+        locationHindi: entities.locationNameHi
+      },
+      recommendation: {
+        bestMandi: bestMandi.mandiName,
+        pricePerKg: bestMandi.price,
+        distanceKm: bestMandi.distanceKm,
+        transportCost: bestMandi.transportCost,
+        riskPenalty: bestMandi.riskPenalty,
+        expectedRevenue: bestMandi.expectedRevenue,
+        expectedNetReturn: bestMandi.expectedNetReturn,
+        sellNow: bestMandi.sell_now_vs_wait === 'sell_now',
+        timingAdvice: bestMandi.sell_now_vs_wait,
+        trend: bestMandi.trend,
+        weatherRisk: result.weatherRisk.riskLevel
+      },
+      speechTextHindi,
+      rankedMandis: result.rankedMandis,
+      provenance: result.provenance
     });
 
   } catch (error) {
-    console.error('[IVR] Controller Error:', error);
-    // Exotel needs a reliable format even on error
-    const inputData = { ...req.query, ...req.body };
-    if (inputData.mode === 'exotel') {
-      res.type('text/plain');
-      return res.send("Takneeki samasya ke karan jankari nahi mil payi. Kripya thodi der baad prayas karein.");
+    console.error('[IVR] Controller Error:', error.message);
+    const speechError = buildErrorSpeechHindi(error.code || 'default');
+
+    if (parsed.isExotelMode) {
+      return sendPlainText(res, error.statusCode || 200, speechError);
     }
-    return res.json({
+
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Analysis is temporarily unavailable."
+      code: error.code || 'IVR_ERROR',
+      message: error.message,
+      speechTextHindi: speechError
     });
   }
 };
 
+const calculateSessionRecommendation = async (callSid, session) => {
+  if (ivrSessionStore.get(callSid) !== session) return;
+
+  try {
+    const result = await recommendationService.getRecommendation({
+      cropId: session.cropId,
+      varietyId: session.varietyId,
+      quantityKg: session.quantityKg,
+      location: session.location,
+      coordinates: session.coordinates
+    });
+    const speechTextHindi = buildRecommendationSpeechHindi({
+      cropNameHi: session.cropNameHi,
+      quantityKg: session.quantityKg,
+      locationNameHi: session.locationNameHi,
+      bestMandi: result.bestMandiDetails,
+      weatherRisk: result.weatherRisk
+    });
+
+    // A later selection, expiration, or callback may have replaced this session.
+    if (ivrSessionStore.get(callSid) === session) {
+      ivrSessionStore.set(callSid, {
+        recommendation: result,
+        recommendationState: 'ready',
+        speechTextHindi,
+        step: 'recommendation_ready'
+      });
+    }
+  } catch {
+    if (ivrSessionStore.get(callSid) === session) {
+      ivrSessionStore.set(callSid, { recommendationState: 'failed' });
+      console.error('[IVR] Background recommendation failed.');
+    }
+  }
+};
+
+/**
+ * @desc    Multi-step IVR Passthru handler (GET/POST /api/ivr/step)
+ *          Allows multi-applet flow (Crop -> Quantity -> Location) with session tracking.
+ */
+const handleIvrStep = async (req, res, next) => {
+  const parsed = parseIvrInput(req);
+  const { callSid, step, rawDigits } = parsed;
+
+  // Exotel HEAD probe check - do not mutate session or trigger calculations
+  if (req.method === 'HEAD') {
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).end();
+  }
+
+  if (!callSid) {
+    return res.status(400).json({
+      success: false,
+      message: 'CallSid is required for step-by-step IVR tracking.'
+    });
+  }
+
+  try {
+    const session = ivrSessionStore.get(callSid);
+
+    if (step === 'crop') {
+      const cropDigit = rawDigits || parsed.cropDigit;
+      const cropConfig = IVR_CROPS[cropDigit];
+      if (!Object.hasOwn(IVR_CROPS, cropDigit)) {
+        return sendPlainText(res, 400, buildErrorSpeechHindi('INVALID_CROP'));
+      }
+      if (session?.cropDigit === cropDigit) {
+        return sendPlainText(res, 200, 'OK');
+      }
+      ivrSessionStore.set(callSid, {
+        cropDigit,
+        cropId: cropConfig.id,
+        cropNameHi: cropConfig.nameHi,
+        varietyId: cropConfig.varietyId,
+        quantityKg: undefined,
+        recommendationState: undefined,
+        recommendation: undefined,
+        speechTextHindi: undefined,
+        step: 'crop_selected'
+      });
+      return sendPlainText(res, 200, 'OK');
+    }
+
+    if (step === 'quantity') {
+      const quantityDigit = rawDigits || parsed.quantityDigit;
+      const qtyConfig = IVR_QUANTITIES[quantityDigit];
+      if (!Object.hasOwn(IVR_QUANTITIES, quantityDigit)) {
+        return sendPlainText(res, 400, buildErrorSpeechHindi('INVALID_QUANTITY'));
+      }
+      if (!session?.cropId) {
+        return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
+      }
+      if (session.quantityKg && session.quantityDigit === quantityDigit) {
+        return sendPlainText(res, 200, 'OK');
+      }
+      ivrSessionStore.set(callSid, {
+        quantityDigit,
+        quantityKg: qtyConfig.kg,
+        quantityLabelHi: qtyConfig.labelHi,
+        recommendationState: undefined,
+        recommendation: undefined,
+        speechTextHindi: undefined,
+        step: 'quantity_selected'
+      });
+      return sendPlainText(res, 200, 'OK');
+    }
+
+    if (step === 'location') {
+      const locationDigit = rawDigits || parsed.locationDigit;
+      if (!Object.hasOwn(IVR_LOCATIONS, locationDigit)) {
+        return sendPlainText(res, 400, buildErrorSpeechHindi('INVALID_LOCATION'));
+      }
+      if (!session?.cropId || !session.quantityKg) {
+        return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
+      }
+      if (session.locationDigit === locationDigit && session.recommendationState) {
+        return sendPlainText(res, 200, 'OK');
+      }
+      const locConfig = IVR_LOCATIONS[locationDigit];
+      const current = ivrSessionStore.set(callSid, {
+        locationDigit,
+        location: locConfig.name,
+        locationNameHi: locConfig.nameHi,
+        coordinates: { latitude: locConfig.lat, longitude: locConfig.lon },
+        recommendationState: 'pending',
+        recommendation: undefined,
+        speechTextHindi: undefined,
+        step: 'location_selected'
+      });
+
+      setImmediate(calculateSessionRecommendation, callSid, current);
+      return sendPlainText(res, 200, 'OK');
+    }
+
+    return res.status(400).json({ success: false, message: `Unknown step: ${step}` });
+  } catch (error) {
+    console.error('[IVR Step Error]:', error.message);
+    return sendPlainText(res, error.statusCode || 500, buildErrorSpeechHindi(error.code || 'default'));
+  }
+};
+
+/**
+ * @desc    Exotel Dynamic Greeting / TTS URL endpoint (GET/POST /api/ivr/response)
+ *          Serves plain text Hindi response for Exotel Greeting applet configured with dynamic URL.
+ */
+const handleIvrResponse = (req, res) => {
+  const { callSid } = parseIvrInput(req);
+  const session = ivrSessionStore.get(callSid);
+  if (session?.recommendationState === 'pending') {
+    return sendPlainText(res, 200, buildErrorSpeechHindi('RECOMMENDATION_PENDING'));
+  }
+  if (session?.recommendationState === 'failed') {
+    return sendPlainText(res, 200, buildErrorSpeechHindi('RECOMMENDATION_FAILED'));
+  }
+  return sendPlainText(res, 200, session?.speechTextHindi || buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
+};
+
+/**
+ * @desc    Repeat the stored recommendation for digit 1, otherwise say goodbye.
+ */
+const handleIvrRepeat = (req, res) => {
+  if (parseIvrInput(req).rawDigits === '1') {
+    return handleIvrResponse(req, res);
+  }
+  return sendPlainText(res, 200, buildGoodbyeSpeechHindi());
+};
+
+/**
+ * @desc    Exotel Call Status Webhook (POST/GET /api/ivr/callback)
+ *          Cleans up session and records call completion metrics.
+ */
+const handleIvrCallback = (req, res) => {
+  // Exotel HEAD probe check - do not mutate or delete session
+  if (req.method === 'HEAD') {
+    return res.status(200).end();
+  }
+
+  const parsed = parseIvrInput(req);
+  const data = { ...req.query, ...req.body };
+
+  if (parsed.callSid) {
+    ivrSessionStore.delete(parsed.callSid);
+    console.log(`[IVR Callback] CallSid ${parsed.callSid} completed. Status: ${data.Status || 'completed'}`);
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: 'Exotel status callback received and session pruned.',
+    callSid: parsed.callSid
+  });
+};
+
 module.exports = {
-  analyzeIvrDecision
+  analyzeIvrDecision,
+  handleIvrStep,
+  handleIvrResponse,
+  handleIvrRepeat,
+  handleIvrCallback,
+  parseIvrInput,
+  resolveIvrEntities,
+  sendPlainText
 };
