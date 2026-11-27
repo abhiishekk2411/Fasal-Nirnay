@@ -18,7 +18,8 @@ const {
 const parseIvrInput = (req) => {
   const data = { ...req.query, ...req.body };
 
-  const callSid = data.CallSid || data.callSid || data.CallSID || null;
+  const sid = data.CallSid || data.callSid || data.CallSID;
+  const callSid = typeof sid === 'string' && /^[\w-]{1,128}$/.test(sid) ? sid : null;
   const fromNumber = data.From || data.from || data.CallFrom || null;
   const rawDigits = sanitizeDigits(data.digits || data.Digits || data.digit || '');
 
@@ -69,7 +70,7 @@ const resolveIvrEntities = (parsed) => {
   // 1. Resolve Crop
   if (parsed.cropDigit) {
     const cropConfig = IVR_CROPS[parsed.cropDigit];
-    if (!cropConfig) {
+    if (!Object.hasOwn(IVR_CROPS, parsed.cropDigit)) {
       const err = new Error('Invalid crop choice. Press 1 for Tomato, 2 for Onion, 3 for Potato, 4 for Wheat.');
       err.code = 'INVALID_CROP';
       err.statusCode = 400;
@@ -88,7 +89,7 @@ const resolveIvrEntities = (parsed) => {
   // 2. Resolve Quantity
   if (parsed.quantityDigit) {
     const qtyConfig = IVR_QUANTITIES[parsed.quantityDigit];
-    if (!qtyConfig) {
+    if (!Object.hasOwn(IVR_QUANTITIES, parsed.quantityDigit)) {
       const err = new Error('Invalid quantity choice. Press 1 for 400kg, 2 for 800kg, 3 for 1200kg, 4 for 2000kg.');
       err.code = 'INVALID_QUANTITY';
       err.statusCode = 400;
@@ -111,7 +112,7 @@ const resolveIvrEntities = (parsed) => {
   // 3. Resolve Location (Default to Nashik if digit omitted)
   if (parsed.locationDigit) {
     const locConfig = IVR_LOCATIONS[parsed.locationDigit];
-    if (!locConfig) {
+    if (!Object.hasOwn(IVR_LOCATIONS, parsed.locationDigit)) {
       const err = new Error('Invalid location choice. Press 1 for Nashik, 2 for Pune, 3 for Solapur, 4 for Nagpur.');
       err.code = 'INVALID_LOCATION';
       err.statusCode = 400;
@@ -295,12 +296,12 @@ const handleIvrStep = async (req, res, next) => {
   }
 
   try {
-    const session = ivrSessionStore.get(callSid) || ivrSessionStore.set(callSid, { callSid });
+    const session = ivrSessionStore.get(callSid);
 
     if (step === 'crop') {
       const cropDigit = rawDigits || parsed.cropDigit;
       const cropConfig = IVR_CROPS[cropDigit];
-      if (!cropConfig) {
+      if (!Object.hasOwn(IVR_CROPS, cropDigit)) {
         return sendPlainText(res, 400, buildErrorSpeechHindi('INVALID_CROP'));
       }
       ivrSessionStore.set(callSid, {
@@ -308,6 +309,8 @@ const handleIvrStep = async (req, res, next) => {
         cropId: cropConfig.id,
         cropNameHi: cropConfig.nameHi,
         varietyId: cropConfig.varietyId,
+        quantityKg: undefined,
+        speechTextHindi: undefined,
         step: 'crop_selected'
       });
       return sendPlainText(res, 200, 'OK');
@@ -316,47 +319,60 @@ const handleIvrStep = async (req, res, next) => {
     if (step === 'quantity') {
       const quantityDigit = rawDigits || parsed.quantityDigit;
       const qtyConfig = IVR_QUANTITIES[quantityDigit];
-      if (!qtyConfig) {
+      if (!Object.hasOwn(IVR_QUANTITIES, quantityDigit)) {
         return sendPlainText(res, 400, buildErrorSpeechHindi('INVALID_QUANTITY'));
+      }
+      if (!session?.cropId) {
+        return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
       }
       ivrSessionStore.set(callSid, {
         quantityDigit,
         quantityKg: qtyConfig.kg,
         quantityLabelHi: qtyConfig.labelHi,
+        speechTextHindi: undefined,
         step: 'quantity_selected'
       });
       return sendPlainText(res, 200, 'OK');
     }
 
     if (step === 'location') {
-      const locationDigit = rawDigits || parsed.locationDigit || '1';
-      const locConfig = IVR_LOCATIONS[locationDigit] || IVR_LOCATIONS['1'];
-      ivrSessionStore.set(callSid, {
+      const locationDigit = rawDigits || parsed.locationDigit;
+      if (!Object.hasOwn(IVR_LOCATIONS, locationDigit)) {
+        return sendPlainText(res, 400, buildErrorSpeechHindi('INVALID_LOCATION'));
+      }
+      if (!session?.cropId || !session.quantityKg) {
+        return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
+      }
+      const locConfig = IVR_LOCATIONS[locationDigit];
+      const current = ivrSessionStore.set(callSid, {
         locationDigit,
         location: locConfig.name,
         locationNameHi: locConfig.nameHi,
         coordinates: { latitude: locConfig.lat, longitude: locConfig.lon },
+        speechTextHindi: undefined,
         step: 'location_selected'
       });
 
       // Calculate recommendation with gathered inputs
-      const current = ivrSessionStore.get(callSid);
       const result = await recommendationService.getRecommendation({
-        cropId: current.cropId || 'tomato',
-        varietyId: current.varietyId || 'hybrid',
-        quantityKg: current.quantityKg || 800,
-        location: current.location || 'Nashik',
+        cropId: current.cropId,
+        varietyId: current.varietyId,
+        quantityKg: current.quantityKg,
+        location: current.location,
         coordinates: current.coordinates
       });
 
       const speechTextHindi = buildRecommendationSpeechHindi({
-        cropNameHi: current.cropNameHi || 'टमाटर',
-        quantityKg: current.quantityKg || 800,
-        locationNameHi: current.locationNameHi || 'नासिक',
+        cropNameHi: current.cropNameHi,
+        quantityKg: current.quantityKg,
+        locationNameHi: current.locationNameHi,
         bestMandi: result.bestMandiDetails,
         weatherRisk: result.weatherRisk
       });
 
+      if (ivrSessionStore.get(callSid) !== current) {
+        return sendPlainText(res, 409, buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
+      }
       ivrSessionStore.set(callSid, {
         recommendation: result,
         speechTextHindi,
@@ -377,76 +393,19 @@ const handleIvrStep = async (req, res, next) => {
  * @desc    Exotel Dynamic Greeting / TTS URL endpoint (GET/POST /api/ivr/response)
  *          Serves plain text Hindi response for Exotel Greeting applet configured with dynamic URL.
  */
-const handleIvrResponse = async (req, res, next) => {
-  const parsed = parseIvrInput(req);
-  res.setHeader('Content-Type', 'text/plain');
-
-  // Exotel HEAD probe check - do not mutate session or trigger calculations
-  if (req.method === 'HEAD') {
-    return res.status(200).end();
-  }
-
-  // Check if session exists
-  if (parsed.callSid) {
-    const session = ivrSessionStore.get(parsed.callSid);
-    if (session && session.speechTextHindi) {
-      return sendPlainText(res, 200, session.speechTextHindi);
-    }
-  }
-
-  // Fallback: If no prior session, try to analyze on the fly
-  try {
-    const entities = resolveIvrEntities(parsed);
-    const result = await recommendationService.getRecommendation({
-      cropId: entities.cropId || 'tomato',
-      varietyId: entities.varietyId || 'hybrid',
-      quantityKg: entities.quantityKg || 800,
-      location: entities.location || 'Nashik',
-      coordinates: entities.coordinates
-    });
-
-    const speech = buildRecommendationSpeechHindi({
-      cropNameHi: entities.cropNameHi || 'टमाटर',
-      quantityKg: entities.quantityKg || 800,
-      locationNameHi: entities.locationNameHi || 'नासिक',
-      bestMandi: result.bestMandiDetails,
-      weatherRisk: result.weatherRisk
-    });
-
-    return sendPlainText(res, 200, speech);
-  } catch (err) {
-    return sendPlainText(res, 200, buildErrorSpeechHindi(err.code || 'default'));
-  }
+const handleIvrResponse = (req, res) => {
+  const { callSid } = parseIvrInput(req);
+  const session = ivrSessionStore.get(callSid);
+  return sendPlainText(res, 200, session?.speechTextHindi || buildErrorSpeechHindi('SESSION_UNAVAILABLE'));
 };
 
 /**
- * @desc    Exotel Repeat Prompt Handler (GET/POST /api/ivr/repeat)
- *          Checks DTMF digit: 1 repeats speech, anything else plays goodbye.
+ * @desc    Repeat the stored recommendation for digit 1, otherwise say goodbye.
  */
-const handleIvrRepeat = async (req, res, next) => {
-  const parsed = parseIvrInput(req);
-  res.setHeader('Content-Type', 'text/plain');
-
-  // Exotel HEAD probe check - do not mutate session or trigger calculations
-  if (req.method === 'HEAD') {
-    return res.status(200).end();
+const handleIvrRepeat = (req, res) => {
+  if (parseIvrInput(req).rawDigits === '1') {
+    return handleIvrResponse(req, res);
   }
-
-  const digit = parsed.rawDigits;
-
-  if (digit === '1') {
-    // Caller pressed 1 to repeat advice
-    if (parsed.callSid) {
-      const session = ivrSessionStore.get(parsed.callSid);
-      if (session && session.speechTextHindi) {
-        return sendPlainText(res, 200, session.speechTextHindi);
-      }
-    }
-    // Fallback repeat message
-    return handleIvrResponse(req, res, next);
-  }
-
-  // Any other digit or timeout -> Goodbye
   return sendPlainText(res, 200, buildGoodbyeSpeechHindi());
 };
 
