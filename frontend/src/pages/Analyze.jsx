@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Keyboard, Mic, Camera, MapPin, Navigation, Loader2 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
+import VoiceHeroCard from '../components/VoiceHeroCard';
 import VoiceInput from '../components/VoiceInput';
 import ImageInput from '../components/ImageInput';
 import { cropOptions, unitOptions } from '../data/mockData';
@@ -133,12 +134,62 @@ export default function Analyze() {
       const result = await analyzeDecision(formData);
       
       // 4. Navigate on success
-      navigate('/results', { state: { decision: result } });
+      navigate('/results', { 
+        state: { 
+          decision: result,
+          searchParams: {
+            crop: formData.crop,
+            variety: formData.variety || 'hybrid',
+            quantityKg: (formData.unit === 'quintal' || formData.unit === 'क्विंटल') ? Number(formData.quantity) * 100 : Number(formData.quantity),
+            quantityQuintals: (formData.unit === 'quintal' || formData.unit === 'क्विंटल') ? Number(formData.quantity) : Number(formData.quantity) / 100,
+            location: formData.location,
+            latitude: formData.latitude,
+            longitude: formData.longitude
+          }
+        } 
+      });
     } catch (err) {
       console.error("Analysis Failed:", err);
       // 5. Handle error gracefully
       const message = err.message || 'सर्वर से जानकारी नहीं मिल पा रही है। कृपया कुछ देर बाद फिर कोशिश करें।';
       setErrorMsg(message);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleVoiceAnalyze = async (voicePayload) => {
+    setIsAnalyzing(true);
+    setErrorMsg('');
+    try {
+      const result = await analyzeDecision({
+        crop: voicePayload.crop,
+        variety: voicePayload.variety || 'hybrid',
+        quantity: voicePayload.quantityKg,
+        unit: 'kg',
+        location: voicePayload.location || formData.location,
+        latitude: voicePayload.latitude ?? formData.latitude,
+        longitude: voicePayload.longitude ?? formData.longitude
+      });
+
+      navigate('/results', {
+        state: {
+          decision: result,
+          fromVoice: true,
+          searchParams: {
+            crop: voicePayload.crop,
+            variety: voicePayload.variety || 'hybrid',
+            quantityKg: voicePayload.quantityKg,
+            quantityQuintals: voicePayload.quantityQuintals || (voicePayload.quantityKg / 100),
+            location: voicePayload.location || formData.location,
+            latitude: voicePayload.latitude ?? formData.latitude,
+            longitude: voicePayload.longitude ?? formData.longitude
+          }
+        }
+      });
+    } catch (err) {
+      console.error("Voice Analysis Failed:", err);
+      setErrorMsg(err.message || 'सर्वर से जानकारी नहीं मिल पा रही है। कृपया कुछ देर बाद फिर कोशिश करें।');
     } finally {
       setIsAnalyzing(false);
     }
@@ -253,7 +304,31 @@ export default function Analyze() {
         subtitle={t('analyze.subtitle')}
       />
 
-      <div className="max-w-2xl mx-auto">
+      <div className="max-w-3xl mx-auto">
+        {/* Prominent Push-to-Talk Voice Hero Card */}
+        <VoiceHeroCard 
+          detectedLocation={formData.location}
+          latitude={formData.latitude}
+          longitude={formData.longitude}
+          onAnalyze={handleVoiceAnalyze}
+          onUpdateFormData={(updates) => {
+            setFormData(prev => ({
+              ...prev,
+              ...updates
+            }));
+          }}
+          isAnalyzing={isAnalyzing}
+        />
+
+        {/* Manual Form Separator / Header */}
+        <div className="flex items-center my-8">
+          <div className="flex-1 border-t border-surface-200"></div>
+          <span className="px-4 text-xs md:text-sm font-semibold uppercase tracking-wider text-surface-400 bg-surface-50 rounded-full">
+            या नीचे फॉर्म में खुद दर्ज करें (Or Use Manual Form)
+          </span>
+          <div className="flex-1 border-t border-surface-200"></div>
+        </div>
+
         {/* Input Mode Tabs */}
         <div className="flex flex-col sm:flex-row bg-surface-100 p-1.5 rounded-xl mb-8 gap-1.5">
           <button 

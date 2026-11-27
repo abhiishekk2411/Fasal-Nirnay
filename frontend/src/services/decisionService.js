@@ -3,13 +3,47 @@
  * Communicates with the backend decision endpoints.
  */
 
-import { apiRequest } from './api';
+import { apiRequest, BASE_URL } from './api';
+
+export const getCurrentUserId = () => {
+  try {
+    const userStr = localStorage.getItem('fasalnirnay_user');
+    if (userStr) {
+      const user = JSON.parse(userStr);
+      if (user.userId || user.phone) return user.userId || user.phone;
+    }
+  } catch (e) {
+    // Ignore JSON error
+  }
+  return 'demo_farmer_001';
+};
+
+export const parseVoiceTranscript = async (transcript, language = 'hi') => {
+  const result = await apiRequest('/voice/parse', {
+    method: 'POST',
+    body: JSON.stringify({ transcript, language })
+  });
+  return result;
+};
 
 export const analyzeDecision = async (formData) => {
+  const userId = getCurrentUserId();
+  
+  let quantityKg = formData.quantityKg;
+  if (quantityKg == null) {
+    const rawQty = Number(formData.quantity) || 0;
+    if (formData.unit === 'quintal' || formData.unit === 'क्विंटल' || formData.quantityQuintals != null) {
+      quantityKg = (formData.quantityQuintals != null ? Number(formData.quantityQuintals) : rawQty) * 100;
+    } else {
+      quantityKg = rawQty;
+    }
+  }
+
   const payload = {
+    userId,
     cropId: formData.crop?.toLowerCase() || formData.cropId,
-    varietyId: formData.variety?.toLowerCase() || formData.varietyId,
-    quantityKg: Number(formData.quantity) || formData.quantityKg,
+    varietyId: formData.variety?.toLowerCase() || formData.varietyId || 'hybrid',
+    quantityKg,
     location: formData.location || formData.farmerLocation
   };
   if (formData.latitude != null && formData.longitude != null) {
@@ -55,7 +89,7 @@ export const analyzeImage = async (file) => {
   formData.append('image', file);
 
   try {
-    const response = await fetch('/api/vision/analyze', {
+    const response = await fetch(`${BASE_URL}/vision/analyze`, {
       method: 'POST',
       body: formData,
     });

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sprout, Phone, KeyRound, ArrowRight } from 'lucide-react';
+import { Sprout, Phone, KeyRound, ArrowRight, Sparkles } from 'lucide-react';
 import { useTranslation } from '../i18n';
 
 const Login = () => {
@@ -17,7 +17,27 @@ const Login = () => {
 
   const handleVerifyOtp = (e) => {
     e.preventDefault();
-    if (otp.length === 4) navigate('/dashboard');
+    if (otp.length === 4) {
+      try {
+        localStorage.setItem('fasalnirnay_user', JSON.stringify({ phone, userId: phone }));
+      } catch (err) {
+        console.error('Failed to save user session:', err);
+      }
+      navigate('/dashboard');
+    }
+  };
+
+  const handleDemoLogin = () => {
+    try {
+      localStorage.setItem('fasalnirnay_user', JSON.stringify({
+        phone: '9876543210',
+        userId: 'demo_farmer_001',
+        name: 'Demo Farmer'
+      }));
+    } catch (err) {
+      console.error('Failed to save demo user session:', err);
+    }
+    navigate('/analyze');
   };
 
   return (
@@ -62,10 +82,30 @@ const Login = () => {
 
               <button
                 type="submit"
-                className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-lg font-bold text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-lg font-bold text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 cursor-pointer"
                 disabled={phone.length !== 10}
               >
                 {t('auth.getOtp')} <ArrowRight className="ml-2 h-6 w-6" />
+              </button>
+
+              <div className="relative my-4">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-surface-200" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="px-3 bg-white text-surface-400 font-bold uppercase tracking-wider">
+                    मूल्यांकन के लिए / Evaluator Access
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleDemoLogin}
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 border-emerald-500 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-extrabold text-base md:text-lg shadow-sm transition-all cursor-pointer"
+              >
+                <Sparkles className="h-5 w-5 text-amber-500" />
+                <span>Demo Farmer Login (Instant Access)</span>
               </button>
             </form>
           ) : (

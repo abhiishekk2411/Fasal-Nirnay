@@ -3,7 +3,8 @@
  * Provides the base API client for communicating with the backend.
  */
 
-const BASE_URL = '/api';
+const API_ROOT = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+export const BASE_URL = API_ROOT ? `${API_ROOT}/api` : '/api';
 
 /**
  * Generic API request helper.
